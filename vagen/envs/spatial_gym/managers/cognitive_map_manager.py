@@ -141,12 +141,13 @@ class CognitiveMapTurnLog:
 
 class CognitiveMapManager:
     """Evaluate cognitive map JSON against ground truth."""    
-    def __init__(self, cogmap_type: str = "standard", pos_allow_scale: bool = False, scope: str = "all"):
+    def __init__(self, cogmap_type: str = "standard", pos_allow_scale: bool = False, scope: str = "all", include_agent: bool = False):
         """Initialize cognitive map manager."""
         self.config = {
             "cogmap_type": cogmap_type,
             "pos_allow_scale": bool(pos_allow_scale),
             "scope": (scope if scope in ("global", "all") else "all"),
+            "include_agent": bool(include_agent),
         }
         # room_id -> first-entry gate name
         self.entry_gate_by_room: dict[int, str] = {}
@@ -331,7 +332,7 @@ class CognitiveMapManager:
             pred_global_br = self._preprocess_predicted(json_dict, observed_set, visible_names, gt_room, gt_agent, map_type)
             gt_global_br = self._build_gt_global_baseroom(gt_room, gt_agent, observed_set)
             full_global = transform_baseroom(self._baseroom_from_gt(gt_room, gt_agent), gt_agent.init_pos, gt_agent.init_ori)
-            agent_br = self._build_gt_global_agent_baseroom(gt_room, gt_agent)
+            agent_br = self._build_gt_global_agent_baseroom(gt_room, gt_agent) if self.config.get("include_agent", False) else None
             self._ensure_pos_norm_L(gt_room, gt_agent)
             return self._eval_global(pred_global_br, gt_global_br, full_global, agent_br, assistant_response, json_dict)
         
@@ -396,12 +397,12 @@ class CognitiveMapManager:
             symbolic_map=symbolic_map,
         )
 
-    def _eval_global(self, pred_global_br: BaseRoom,  gt_global_br: BaseRoom, gt_room_state_full: BaseRoom, agent_br: BaseRoom, assistant_response: str, pred_json: Dict) -> GlobalCogMapTurnLog:
+    def _eval_global(self, pred_global_br: BaseRoom,  gt_global_br: BaseRoom, gt_room_state_full: BaseRoom, agent_br: Optional[BaseRoom], assistant_response: str, pred_json: Dict) -> GlobalCogMapTurnLog:
         gt_json = self.baseroom_to_json(gt_global_br, include_gates=True)
         metrics = self._compare_baserooms(pred_global_br, gt_global_br)
         gt_json_full = self.baseroom_to_json(gt_room_state_full, include_gates=True)
         metrics_full = self._compare_baserooms(pred_global_br, gt_room_state_full)
-        metric_agent = self._compare_baserooms(pred_global_br, agent_br)
+        metric_agent = self._compare_baserooms(pred_global_br, agent_br) if agent_br is not None else MapCogMetrics.invalid()
         return GlobalCogMapTurnLog(
             type="global",
             extraction_success=True,
@@ -1164,8 +1165,9 @@ class CognitiveMapManager:
         # include gates
         for g in gt_room.gates:
             objs.append(Object(name=g.name, pos=g.pos.copy(), ori=g.ori.copy(), has_orientation=True))
-        # include agent
-        objs.append(Agent(name='agent', pos=gt_agent.pos.copy(), ori=gt_agent.ori.copy(), has_orientation=True))
+        # include agent if configured
+        if self.config.get("include_agent", False):
+            objs.append(Agent(name='agent', pos=gt_agent.pos.copy(), ori=gt_agent.ori.copy(), has_orientation=True))
         return BaseRoom(objects=objs, name='gt')
 
     def _build_gt_global_agent_baseroom(self, gt_room: Room, gt_agent: Agent) -> BaseRoom:
@@ -1176,7 +1178,7 @@ class CognitiveMapManager:
     def _build_gt_global_baseroom(self, gt_room: Room, gt_agent: Agent, observed_set: set[str]) -> BaseRoom:
         raw = self._baseroom_from_gt(gt_room, gt_agent)
         br = transform_baseroom(raw, gt_agent.init_pos, gt_agent.init_ori)
-        keep = set(observed_set) | {"agent"}
+        keep = set(observed_set) | ({"agent"} if self.config.get("include_agent", False) else set())
         return self._filter_br_by_names(br, keep)
 
     def _build_gt_local_baseroom(self, gt_room: Room, gt_agent: Agent) -> BaseRoom:
@@ -1222,7 +1224,10 @@ class CognitiveMapManager:
 
     # =============================== Room comparisons =============================== 
 
-    def _compare_baserooms(self, pred_room: BaseRoom, gt_room: BaseRoom) -> MapCogMetrics:
+    def _compare_baserooms(self, pred_room: BaseRoom, gt_room: BaseRoom, exclude_names: Optional[set[str]] = None) -> MapCogMetrics:
+        if exclude_names:
+            pred_room = BaseRoom(objects=[o for o in pred_room.objects if o.name not in exclude_names], name=pred_room.name)
+            gt_room = BaseRoom(objects=[o for o in gt_room.objects if o.name not in exclude_names], name=gt_room.name)
         m = compute_map_metrics(
             pred_room,
             gt_room,
@@ -1370,11 +1375,11 @@ class CognitiveMapManager:
             _add(jd.get("gates"))
             return flat or jd
 
-        # --- Global: keep observed + gates + agent; also handle list-based sections ---
+        # --- Global: keep observed + gates (+ agent if configured) ---
         if map_type == "global":
             # Flatten {"objects":[...], "gates":[...]} into {name: {position, facing, ...}}
             jd = _flatten_nested_json(jd)
-            keep = set(observed) | gate_names | {"agent"}
+            keep = set(observed) | gate_names | ({"agent"} if self.config.get("include_agent", False) else set())
             jd = _norm_map(jd, keep, face_fn=_norm_face_global)
             return self._parse_section_to_baseroom(jd, "pred_global") or BaseRoom(objects=[], name="pred_global")
 
