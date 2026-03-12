@@ -1453,6 +1453,7 @@ class CognitiveMapManager:
         forced_term: bool = False,
         dir_baseline: float = 1.0 / 8.0,
         facing_baseline: float = 1.0 / 4.0,
+        coverage_penalty_scale: float = 5.0,
     ) -> tuple:
         """Combine raw cogmap metrics into a final score and reward.
 
@@ -1462,10 +1463,10 @@ class CognitiveMapManager:
         cogmap_score = (
             max(0.0, cogmap_scores['dir'] - dir_baseline) +
             max(0.0, cogmap_scores['facing'] - facing_baseline) +
-            cogmap_scores['pos'] +
-            exploration_coverage
-        ) / 4.0
-        reward = cogmap_score * reward_scale
+            cogmap_scores['pos']
+        ) / 3.0
+        coverage_penalty = -(1.0 - exploration_coverage) * coverage_penalty_scale
+        reward = cogmap_score * reward_scale + coverage_penalty
         if forced_term:
             reward -= forced_term_penalty
         info = {
@@ -1474,6 +1475,7 @@ class CognitiveMapManager:
             'cogmap_facing': cogmap_scores['facing'],
             'cogmap_pos': cogmap_scores['pos'],
             'cogmap_exploration_coverage': exploration_coverage,
+            'coverage_penalty': coverage_penalty,
             'success': cogmap_score > 0.0,
             'forced_term': forced_term,
         }
