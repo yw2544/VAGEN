@@ -183,6 +183,14 @@ def execute_exploration_action(
         if exp_log:
             exp_log.room_state = None
             exp_log.agent_state = None
+
+        # Expose agent state for downstream consumers (e.g. graph builders).
+        info["pos"] = [int(exploration_manager.agent.pos[0]),
+                       int(exploration_manager.agent.pos[1])]
+        info["ori"] = [int(exploration_manager.agent.ori[0]),
+                       int(exploration_manager.agent.ori[1])]
+        info["is_action_fail"] = bool(exp_log.is_action_fail) if exp_log else False
+        info["action_executed"] = [r.action_command for r in action_results]
         if action_sequence.final_action and action_sequence.final_action.is_term():
             awaiting_cogmap = True
             obs = {'obs_str': prompter.get_cogmap_output_prompt()}
