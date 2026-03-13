@@ -19,7 +19,14 @@ import traceback
 import importlib
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
-from .gym_agent_loop import convert_obs_to_content, extract_success, _flatten_text_only_content, _normalize_images
+from .gym_agent_loop import (
+    _flatten_text_only_content,
+    _get_forbidden_vision_token_ids,
+    _normalize_images,
+    _strip_forbidden_vision_tokens,
+    convert_obs_to_content,
+    extract_success,
+)
 
 class AgentState(Enum):
     PENDING = "pending"
@@ -92,7 +99,7 @@ class GymAgentLoop(AgentLoopBase):
         cls.apply_chat_template_kwargs = config.data.get("apply_chat_template_kwargs", {})
         cls.prompt_length = config.actor_rollout_ref.rollout.prompt_length
         cls.response_length = config.actor_rollout_ref.rollout.response_length
-        
+        cls.forbidden_response_token_ids = _get_forbidden_vision_token_ids(tokenizer, processor)
 
     @rollout_trace_op
     async def run(self, sampling_params: Dict[str, Any], **kwargs) -> AgentLoopOutput:
@@ -215,11 +222,25 @@ class GymAgentLoop(AgentLoopBase):
             )
 
 
-        agent_data.turn_response_ids = output.token_ids
-        agent_data.turn_response_mask = [1] * len(output.token_ids)
+        response_ids, response_logprobs, removed_tokens = _strip_forbidden_vision_tokens(
+            list(output.token_ids),
+            self.forbidden_response_token_ids,
+            self.tokenizer,
+            list(output.log_probs) if output.log_probs is not None else None,
+        )
+        if removed_tokens:
+            logger.warning(
+                "Removed multimodal control tokens from assistant response in env:%s request:%s tokens=%s",
+                agent_data.env_name,
+                agent_data.request_id,
+                removed_tokens,
+            )
+
+        agent_data.turn_response_ids = response_ids
+        agent_data.turn_response_mask = [1] * len(agent_data.turn_response_ids)
         agent_data.turn_prompt_ids += agent_data.turn_response_ids
-        if output.log_probs:
-            agent_data.turn_response_logprobs = output.log_probs
+        if response_logprobs is not None:
+            agent_data.turn_response_logprobs = response_logprobs
 
         # Cache assistant text and add assistant message (text-only)
         assistant_message = await self.loop.run_in_executor(

@@ -105,6 +105,55 @@ def _normalize_images(imgs: List[Image.Image]) -> List[Image.Image]:
         out.append(im.convert("RGB") if isinstance(im, Image.Image) else im)
     return out
 
+
+def _get_forbidden_vision_token_ids(tokenizer, processor) -> set[int]:
+    """Resolve multimodal control token ids that must never appear in assistant output."""
+    token_names = (
+        "<|vision_start|>",
+        "<|vision_end|>",
+        "<|image_pad|>",
+        "<|video_pad|>",
+    )
+    resolved_ids: set[int] = set()
+
+    candidates = [processor, getattr(processor, "tokenizer", None), tokenizer]
+    for candidate in candidates:
+        if candidate is None or not hasattr(candidate, "convert_tokens_to_ids"):
+            continue
+        for token_name in token_names:
+            token_id = candidate.convert_tokens_to_ids(token_name)
+            if isinstance(token_id, int) and token_id >= 0:
+                unk_id = getattr(candidate, "unk_token_id", None)
+                if unk_id is None or token_id != unk_id:
+                    resolved_ids.add(token_id)
+    return resolved_ids
+
+
+def _strip_forbidden_vision_tokens(
+    token_ids: List[int],
+    forbidden_token_ids: set[int],
+    tokenizer,
+    log_probs: Optional[List[float]] = None,
+) -> tuple[List[int], Optional[List[float]], List[str]]:
+    """Remove multimodal control tokens from generated assistant responses."""
+    if not token_ids or not forbidden_token_ids:
+        return list(token_ids), list(log_probs) if log_probs is not None else None, []
+
+    sanitized_ids: List[int] = []
+    sanitized_log_probs: Optional[List[float]] = [] if log_probs is not None else None
+    removed_token_names: List[str] = []
+
+    for idx, token_id in enumerate(token_ids):
+        if token_id in forbidden_token_ids:
+            removed_token_names.append(str(tokenizer.convert_ids_to_tokens(token_id)))
+            continue
+        sanitized_ids.append(token_id)
+        if sanitized_log_probs is not None:
+            sanitized_log_probs.append(log_probs[idx])
+
+    return sanitized_ids, sanitized_log_probs, removed_token_names
+
+
 def extract_success(info: Dict[str, Any], success_keys: str = "success|is_success") -> bool:
     """Extract success flag from env info dict."""
     for key in success_keys.split("|"):
@@ -170,7 +219,8 @@ class GymAgentLoop(AgentLoopBase):
         cls.apply_chat_template_kwargs = config.data.get("apply_chat_template_kwargs", {})
         cls.prompt_length = config.actor_rollout_ref.rollout.prompt_length
         cls.response_length = config.actor_rollout_ref.rollout.response_length
-      
+        cls.forbidden_response_token_ids = _get_forbidden_vision_token_ids(tokenizer, processor)
+
         _placeholder = [{"role": "system", "content": "placeholder"}]
         if processor is not None:
             _prefix_text = processor.apply_chat_template(
@@ -330,14 +380,27 @@ class GymAgentLoop(AgentLoopBase):
                 image_data=agent_data.image_data,
             )
 
+        response_ids, response_logprobs, removed_tokens = _strip_forbidden_vision_tokens(
+            list(output.token_ids),
+            self.forbidden_response_token_ids,
+            self.tokenizer,
+            list(output.log_probs) if output.log_probs is not None else None,
+        )
+        if removed_tokens:
+            logger.warning(
+                "Removed multimodal control tokens from assistant response in env:%s request:%s tokens=%s",
+                agent_data.env_name,
+                agent_data.request_id,
+                removed_tokens,
+            )
 
-        agent_data.response_ids = output.token_ids
-        if len(output.token_ids)>agent_data.response_limit:
-            logger.warning(f"In env:{agent_data.env_name}, generated response length {len(output.token_ids)} exceeds per-turn response_limit {agent_data.response_limit}")
+        agent_data.response_ids = response_ids
+        if len(agent_data.response_ids)>agent_data.response_limit:
+            logger.warning(f"In env:{agent_data.env_name}, generated response length {len(agent_data.response_ids)} exceeds per-turn response_limit {agent_data.response_limit}")
         agent_data.prompt_ids += agent_data.response_ids
         agent_data.response_mask += [1] * len(agent_data.response_ids)
-        if output.log_probs:
-            agent_data.response_logprobs += output.log_probs
+        if response_logprobs is not None:
+            agent_data.response_logprobs += response_logprobs
 
         # Cache assistant text and add assistant message (text-only)
         assistant_message = await self.loop.run_in_executor(
