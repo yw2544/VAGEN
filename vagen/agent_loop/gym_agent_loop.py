@@ -88,7 +88,7 @@ class AgentData:
         self.env_rewards: List[float] = []
         self.traj_success: bool = False
         self.env_turns: int = 0
-
+        self.graph_states: List[Dict[str, Any]] = []
 
         # Cached assistant text to step env
         self.last_assistant_text: Optional[str] = None
@@ -281,6 +281,9 @@ class GymAgentLoop(AgentLoopBase):
             response_limit=per_turn_response_limit,
             env_name=kwargs["env_name"],
         )
+        init_graph_state = info.get("graph_state") if isinstance(info, dict) else None
+        if init_graph_state is not None:
+            agent_data.graph_states.append(init_graph_state)
 
         # State machine: always GENERATE -> INTERACT, and decide termination inside INTERACT
         state = AgentState.PENDING
@@ -324,7 +327,13 @@ class GymAgentLoop(AgentLoopBase):
             reward_score=sum(agent_data.env_rewards) if agent_data.env_rewards else 0.0,
             num_turns=agent_data.env_turns,
             metrics=agent_data.metrics,
-            extra_fields={ "image_data": agent_data.image_data,"reward_extra_info": {"traj_success": float(agent_data.traj_success)}},
+            extra_fields={
+                "image_data": agent_data.image_data,
+                "reward_extra_info": {
+                    "traj_success": float(agent_data.traj_success),
+                    "graph_states": list(agent_data.graph_states),
+                },
+            },
         )
         return output
 
@@ -431,6 +440,9 @@ class GymAgentLoop(AgentLoopBase):
             obs, reward, done, info = {"obs_str":"Environment Error"}, 0.0, True, {"traj_success": False}
 
         agent_data.env_rewards.append(float(reward))
+        graph_state = info.get("graph_state") if isinstance(info, dict) else None
+        if graph_state is not None:
+            agent_data.graph_states.append(graph_state)
         agent_data.traj_success = extract_success(info)
         agent_data.env_turns += 1
         # Termination rule #3: env done or success

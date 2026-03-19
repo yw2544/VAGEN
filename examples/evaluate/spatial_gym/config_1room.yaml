@@ -5,9 +5,9 @@ fileroot: ${oc.env:HOME}/projects/vagen
 
 envs:
   - name: SpatialGym
-    n_envs: 20
+    n_envs: 50
     tag_id: spatial_gym_1room
-    seed: [0, 19, 1]
+    seed: [200, 249, 1]
     max_turns: 11
     config:
       exp_type: active
