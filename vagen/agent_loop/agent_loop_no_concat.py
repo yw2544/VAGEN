@@ -590,12 +590,18 @@ class AgentLoopWorkerBase:
         reward_extra_infos = [input.extra_fields.get("reward_extra_info", {}) for input in inputs]
         reward_extra_keys = list(reward_extra_infos[0].keys())
         for key in reward_extra_keys:
-            non_tensor_batch[key] = np.array([info[key] for info in reward_extra_infos], dtype=object)
+            arr = np.empty(len(reward_extra_infos), dtype=object)
+            for i, info in enumerate(reward_extra_infos):
+                arr[i] = info[key]
+            non_tensor_batch[key] = arr
 
         # Add multi_modal_inputs to non_tensor_batch if any samples have them
         multi_modal_inputs_list = [input.multi_modal_inputs for input in inputs]
         if any(mmi is not None for mmi in multi_modal_inputs_list):
-            non_tensor_batch["multi_modal_inputs"] = np.array(multi_modal_inputs_list, dtype=object)
+            arr = np.empty(len(multi_modal_inputs_list), dtype=object)
+            for i, mmi in enumerate(multi_modal_inputs_list):
+                arr[i] = mmi
+            non_tensor_batch["multi_modal_inputs"] = arr
 
         metrics = [input.metrics.model_dump() for input in inputs]
         # Collect extra fields from all inputs and convert them to np.ndarray
