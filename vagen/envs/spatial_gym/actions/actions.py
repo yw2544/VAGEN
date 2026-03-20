@@ -29,7 +29,7 @@ Constraints:
 - Zero, one or more <M>. JumpTo requires a prior Observe() of the target.
 - Exactly one <F>, and it must be the final action.
 - No more than one Observe().
-- Term() must appear alone (no motion actions).
+- Term() must appear alone (no motion or Observe actions).
 - Any violation is invalid.
 
 Examples:
@@ -419,8 +419,9 @@ class ActionSequence:
             f"Valid:   Actions: [Rotate(90), Observe()]\n" +
             f"Valid:   Actions: [JumpTo(table), Observe()]\n" +
             f"Valid:   Actions: [Term()]\n" +
-            f"INVALID: Actions: [Rotate(90)]              ← missing final action\n" +
-            f"INVALID: Actions: [JumpTo(table), Term()]   ← Term must be alone\n\n"
+            f"INVALID: Actions: [Rotate(90)]                          ← missing final action\n" +
+            f"INVALID: Actions: [JumpTo(table), Term()]               ← Term must be alone\n" +
+            f"INVALID: Actions: [JumpTo(table), Observe(), Term()]    ← never combine Observe() and Term()\n\n"
         )
         
         return ACTION_INSTRUCTION.format(

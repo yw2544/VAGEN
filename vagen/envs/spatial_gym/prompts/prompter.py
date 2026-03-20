@@ -158,9 +158,8 @@ class PromptManager:
 
     def invalid_action_message(self) -> str:
         return (
-            "Invalid action. Each sequence must end with one final action: "
-            "Observe() or Term(). "
-            "E.g. [Rotate(90), Observe()] or [JumpTo(obj), Observe()]."
+            "Invalid action. Use Observe() OR Term() as the sole final action — never both. "
+            "E.g. [JumpTo(obj), Observe()] or [Term()]."
         )
 
     def steps_left_message(self, remaining_steps: int) -> str:
