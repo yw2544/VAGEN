@@ -1453,7 +1453,7 @@ class CognitiveMapManager:
         forced_term: bool = False,
         dir_baseline: float = 1.0 / 8.0,
         facing_baseline: float = 1.0 / 4.0,
-        coverage_penalty_scale: float = 5.0,
+        coverage_penalty_scale: float = 8.0,
     ) -> tuple:
         """Combine raw cogmap metrics into a final score and reward.
 

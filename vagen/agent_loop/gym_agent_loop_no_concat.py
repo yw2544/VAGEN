@@ -72,7 +72,9 @@ class AgentData:
 
         # Env stats
         self.env_turns: int = 0
-
+        # Reward component accumulators
+        self.total_step_penalty: float = 0.0
+        self.total_invalid_penalty: float = 0.0
 
         # Cached assistant text to step env
         self.last_assistant_text: Optional[str] = None
@@ -272,25 +274,55 @@ class GymAgentLoop(AgentLoopBase):
         traj_success = extract_success(info)
         agent_data.env_turns += 1
         last_turn=False
-        
-        
-        
+
+        # Accumulate reward components for exploration (non-terminal) turns
+        if not done:
+            agent_data.total_step_penalty += -0.1
+            if not info.get("is_valid_action", True):
+                agent_data.total_invalid_penalty += -0.5
+
         if done:
             last_turn = True
 
         if self.env_max_turns is not None and agent_data.env_turns >= int(self.env_max_turns):
             last_turn = True
 
-        
         if len(agent_data.turn_response_mask) >= self.response_length:
             last_turn = True
 
         turn_images=agent_data.sys_images+agent_data.cur_images
-        
+
         resp_len = len(agent_data.turn_response_mask)
         response_ids = agent_data.turn_prompt_ids[-resp_len:] if resp_len else []
         prompt_ids = agent_data.turn_prompt_ids[: len(agent_data.turn_prompt_ids) - resp_len]
         multi_modal_data = {"image": turn_images} if turn_images else {}
+
+        # Build reward_extra_info with metric components
+        # All turns must have the same keys (agent_loop_no_concat uses first output's keys).
+        # Non-last turns use defaults; last turn fills in actual values.
+        if last_turn:
+            reward_extra = {
+                "traj_success": float(traj_success),
+                "step_penalty": agent_data.total_step_penalty,
+                "invalid_penalty": agent_data.total_invalid_penalty,
+                "cogmap_reward": float(info.get("cogmap_score", 0.0)) * 10.0 + float(info.get("coverage_penalty", 0.0)),
+                "cogmap_dir": float(info.get("cogmap_dir", 0.0)),
+                "cogmap_facing": float(info.get("cogmap_facing", 0.0)),
+                "cogmap_pos": float(info.get("cogmap_pos", 0.0)),
+                "exp_coverage": float(info.get("cogmap_exploration_coverage", 0.0)),
+            }
+        else:
+            reward_extra = {
+                "traj_success": float(traj_success),
+                "step_penalty": 0.0,
+                "invalid_penalty": 0.0,
+                "cogmap_reward": 0.0,
+                "cogmap_dir": 0.0,
+                "cogmap_facing": 0.0,
+                "cogmap_pos": 0.0,
+                "exp_coverage": 0.0,
+            }
+
         output = AgentLoopOutput(
             prompt_ids=prompt_ids[-self.prompt_length:],
             response_ids=response_ids[: self.response_length],
@@ -302,14 +334,13 @@ class GymAgentLoop(AgentLoopBase):
             reward_score=float(reward),
             num_turns=1,
             metrics=agent_data.metrics,
-            extra_fields={"reward_extra_info": {
-                "traj_success": float(traj_success)},
+            extra_fields={"reward_extra_info": reward_extra,
                 "image_data": turn_images,
                 "last_turn": last_turn,
                 "group_idx": agent_data.group_idx,
                 "traj_idx": agent_data.traj_idx,
                 "turn_idx": agent_data.env_turns,
-                          
+
             },
         )
         agent_data.outputs.append(output)
