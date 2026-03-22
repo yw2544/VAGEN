@@ -89,6 +89,10 @@ class AgentData:
         self.traj_success: bool = False
         self.env_turns: int = 0
         self.graph_states: List[Dict[str, Any]] = []
+        # Reward component accumulators
+        self.total_step_penalty: float = 0.0
+        self.total_invalid_penalty: float = 0.0
+        self.last_info: Dict[str, Any] = {}
 
         # Cached assistant text to step env
         self.last_assistant_text: Optional[str] = None
@@ -332,6 +336,13 @@ class GymAgentLoop(AgentLoopBase):
                 "reward_extra_info": {
                     "traj_success": float(agent_data.traj_success),
                     "graph_states": list(agent_data.graph_states),
+                    "step_penalty": agent_data.total_step_penalty,
+                    "invalid_penalty": agent_data.total_invalid_penalty,
+                    "cogmap_reward": float(agent_data.last_info.get("cogmap_score", 0.0)) * 10.0 + float(agent_data.last_info.get("coverage_penalty", 0.0)),
+                    "cogmap_dir": float(agent_data.last_info.get("cogmap_dir", 0.0)),
+                    "cogmap_facing": float(agent_data.last_info.get("cogmap_facing", 0.0)),
+                    "cogmap_pos": float(agent_data.last_info.get("cogmap_pos", 0.0)),
+                    "exp_coverage": float(agent_data.last_info.get("cogmap_exploration_coverage", 0.0)),
                 },
             },
         )
@@ -445,6 +456,12 @@ class GymAgentLoop(AgentLoopBase):
             agent_data.graph_states.append(graph_state)
         agent_data.traj_success = extract_success(info)
         agent_data.env_turns += 1
+        agent_data.last_info = info if isinstance(info, dict) else {}
+        # Accumulate reward components for exploration (non-terminal) turns
+        if not done:
+            agent_data.total_step_penalty += -0.1
+            if not info.get("is_valid_action", True):
+                agent_data.total_invalid_penalty += -0.5
         # Termination rule #3: env done or success
         if done or agent_data.traj_success:
             return AgentState.TERMINATED
