@@ -305,7 +305,7 @@ class GymAgentLoop(AgentLoopBase):
                 "traj_success": float(traj_success),
                 "step_penalty": agent_data.total_step_penalty,
                 "invalid_penalty": agent_data.total_invalid_penalty,
-                "cogmap_reward": float(info.get("cogmap_score", 0.0)) * 10.0 + float(info.get("coverage_penalty", 0.0)),
+                "cogmap_reward": float(info.get("cogmap_score", 0.0)) * 10.0,
                 "cogmap_dir": float(info.get("cogmap_dir", 0.0)),
                 "cogmap_facing": float(info.get("cogmap_facing", 0.0)),
                 "cogmap_pos": float(info.get("cogmap_pos", 0.0)),

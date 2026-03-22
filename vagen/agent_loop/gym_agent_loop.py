@@ -2,6 +2,7 @@
 # Licensed under the Apache License, Version 2.0
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -335,10 +336,10 @@ class GymAgentLoop(AgentLoopBase):
                 "image_data": agent_data.image_data,
                 "reward_extra_info": {
                     "traj_success": float(agent_data.traj_success),
-                    "graph_states": list(agent_data.graph_states),
+                    "graph_states": json.dumps(list(agent_data.graph_states)),
                     "step_penalty": agent_data.total_step_penalty,
                     "invalid_penalty": agent_data.total_invalid_penalty,
-                    "cogmap_reward": float(agent_data.last_info.get("cogmap_score", 0.0)) * 10.0 + float(agent_data.last_info.get("coverage_penalty", 0.0)),
+                    "cogmap_reward": float(agent_data.last_info.get("cogmap_score", 0.0)) * 10.0,
                     "cogmap_dir": float(agent_data.last_info.get("cogmap_dir", 0.0)),
                     "cogmap_facing": float(agent_data.last_info.get("cogmap_facing", 0.0)),
                     "cogmap_pos": float(agent_data.last_info.get("cogmap_pos", 0.0)),
