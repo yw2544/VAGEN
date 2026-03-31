@@ -52,6 +52,16 @@ class SpatialGymConfig:
 
     prompt_config: Dict[str, Any] = field(default_factory=lambda: {})
 
+    # Perception validation (local cogmap gate before each action)
+    require_perception: bool = False
+    perception_pass_threshold: float = 0.5
+    max_perception_retries: int = 4
+    perception_fail_penalty: float = 0.3
+
+    # Eval tasks after exploration
+    enable_eval_tasks: bool = False
+    eval_task_reward_scale: float = 5.0
+
     calculate_information_gain: bool = True
     
     def config_id(self) -> str:
@@ -73,6 +83,9 @@ class SpatialGymConfig:
         self._validate_exp_type()
         self._validate_field_of_view()
         self._validate_eval_tasks()
+        if self.require_perception and self.exp_type == 'passive':
+            import warnings
+            warnings.warn("require_perception has no effect with exp_type='passive'")
 
     def _validate_exp_type(self):
         """Validate exp_type parameter."""
@@ -144,6 +157,12 @@ class SpatialGymConfig:
             'format_reward': self.format_reward,
             'special_token_list': self.special_token_list,
             'image_placeholder': self.image_placeholder,
+            'require_perception': self.require_perception,
+            'perception_pass_threshold': self.perception_pass_threshold,
+            'max_perception_retries': self.max_perception_retries,
+            'perception_fail_penalty': self.perception_fail_penalty,
+            'enable_eval_tasks': self.enable_eval_tasks,
+            'eval_task_reward_scale': self.eval_task_reward_scale,
         }
     
 

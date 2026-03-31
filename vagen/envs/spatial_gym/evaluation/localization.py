@@ -4,7 +4,7 @@ from typing import List, Tuple, Dict
 import numpy as np
 import json
 
-from .tasks import BaseEvaluationTask, retry_generate_question
+from .tasks import BaseEvaluationTask, retry_generate_question, _snap_ori
 from ..core.object import Object, Gate
 from ..core.relationship import PairwiseRelationshipDiscrete
 from ..actions import BaseAction
@@ -37,9 +37,24 @@ ACTION_2_LOC_TEMPLATE = (
 )
 
 
+_ORI_TO_NAME_8 = {
+    (0, 1): "north", (1, 1): "northeast", (1, 0): "east", (1, -1): "southeast",
+    (0, -1): "south", (-1, -1): "southwest", (-1, 0): "west", (-1, 1): "northwest",
+}
+
+def _make_8_oris():
+    """Generate 8 unit-length orientation vectors matching Agent._validate expectations."""
+    oris = []
+    for k in range(8):
+        theta = np.deg2rad(45.0 * k)
+        oris.append((float(np.sin(theta)), float(np.cos(theta))))
+    return oris
+
+_ALL_8_ORIS = _make_8_oris()
+
 def _ori_to_name(ori: Tuple[int, int]) -> str:
-    mapping = {(0, 1): "north", (1, 0): "east", (0, -1): "south", (-1, 0): "west"}
-    return mapping.get(tuple(int(x) for x in ori), "north")
+    key = tuple(int(np.sign(x)) if abs(x) > 1e-6 else 0 for x in ori)
+    return _ORI_TO_NAME_8.get(key, "north")
 
 class BaseLocEvaluationTask(BaseEvaluationTask):
     """Base class for localization tasks."""
@@ -63,7 +78,7 @@ class BaseLocEvaluationTask(BaseEvaluationTask):
                 for _ in range(10):
                     x, y = self.np_random.integers(xmin, xmax + 1), self.np_random.integers(ymin, ymax + 1)
                     if not self.room.get_cell_info(x, y)['object_name']:
-                        ori = [(0,1), (1,0), (0,-1), (-1,0)][self.np_random.integers(0, 4)]
+                        ori = _ALL_8_ORIS[self.np_random.integers(0, 8)]
                         yield (np.array([x, y]), np.array(ori), int(rid))
                         break
 
@@ -163,7 +178,7 @@ class BaseView2LocationEvaluationTask(BaseLocEvaluationTask):
         self.eval_data.answer = {
             'coord': correct_coord,
             'final_pos': tuple(map(int, self.agent.pos)),
-            'final_ori': tuple(map(int, self.agent.ori)),
+            'final_ori': _snap_ori(self.agent.ori),
             'room_id': int(rid),
             'object_positions': object_positions,
             'object_orientations': all_orientations,
@@ -178,18 +193,6 @@ class BaseView2LocationEvaluationTask(BaseLocEvaluationTask):
 
     def _format_observations_custom(self, observations: List[Dict[str, str]]) -> str:
         raise NotImplementedError
-
-
-class View2LocationTextEvaluationTask(BaseView2LocationEvaluationTask):
-    """Localize your own coordinate (x, y) and orientation using text observations."""
-    def _format_observations_custom(self, observations: List[Dict[str, str]]) -> str:
-        obs_parts = []
-        for v in observations:
-            txt = f"{v['name']} is at {v['direction']}, {v['distance']}"
-            if v.get('orientation'):
-                txt += f", {v['orientation']}"
-            obs_parts.append(txt)
-        return "You observe: " + "; ".join(obs_parts)
 
 
 class View2LocationVisionEvaluationTask(BaseView2LocationEvaluationTask):

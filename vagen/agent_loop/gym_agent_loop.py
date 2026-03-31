@@ -344,6 +344,11 @@ class GymAgentLoop(AgentLoopBase):
                     "cogmap_facing": float(agent_data.last_info.get("cogmap_facing", 0.0)),
                     "cogmap_pos": float(agent_data.last_info.get("cogmap_pos", 0.0)),
                     "exp_coverage": float(agent_data.last_info.get("cogmap_exploration_coverage", 0.0)),
+                    "eval_task_reward": float(agent_data.last_info.get("eval_task_reward", 0.0)),
+                    "eval_task_mean": float(agent_data.last_info.get("eval_task_mean", 0.0)),
+                    # Per-task eval scores (eval_dir, eval_rot, etc.) forwarded from env info
+                    **{k: float(v) for k, v in agent_data.last_info.items()
+                       if k.startswith("eval_") and k not in ("eval_task_reward", "eval_task_scores", "eval_task_mean")},
                 },
             },
         )
@@ -456,10 +461,12 @@ class GymAgentLoop(AgentLoopBase):
         if graph_state is not None:
             agent_data.graph_states.append(graph_state)
         agent_data.traj_success = extract_success(info)
-        agent_data.env_turns += 1
+        # Validation turns (e.g. perception checks) don't count toward the turn budget or penalties
+        if not (isinstance(info, dict) and info.get("is_validation_turn", False)):
+            agent_data.env_turns += 1
         agent_data.last_info = info if isinstance(info, dict) else {}
         # Accumulate reward components for exploration (non-terminal) turns
-        if not done:
+        if not done and not (isinstance(info, dict) and info.get("is_validation_turn", False)):
             agent_data.total_step_penalty += -0.1
             if not info.get("is_valid_action", True):
                 agent_data.total_invalid_penalty += -0.5

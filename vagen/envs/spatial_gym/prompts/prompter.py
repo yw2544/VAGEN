@@ -3,9 +3,10 @@ from typing import Optional
 from ..core.room import Room
 from ..core.object import Agent
 from ..actions.actions import ActionSequence
+from ..core.relationship import PairwiseRelationshipDiscrete, OrientationRel
 
 from ..utils.room_utils import get_room_description
-from .cogmap_prompts import GLOBAL_COGMAP_PROMPT
+from .cogmap_prompts import GLOBAL_COGMAP_PROMPT, LOCAL_PERCEPTION_PROMPT
 from ..utils.utils import THINK_LABEL, ANSWER_LABEL
 
 
@@ -44,6 +45,9 @@ Multi-room rules (may exist multiple rooms):
 
 Use the rendered image as the primary observation signal. Do not assume hidden objects; only use what has been observed.
 
+### Relationship Instructions
+{observation_instructions}
+
 ## Available Actions
 
 {action_instructions}
@@ -74,6 +78,11 @@ class PromptManager:
             if is_active else ""
         )
 
+        observation_instructions = (
+            PairwiseRelationshipDiscrete.prompt()
+            + f"\n{OrientationRel.prompt()}"
+        )
+
         action_instructions = ActionSequence.get_usage_instructions(True)
 
         if self.enable_think:
@@ -99,6 +108,7 @@ class PromptManager:
                 "- Explore: jump to doors early (doorway sees both rooms), then cover each room systematically.\n"
                 "- Coordinates: start=(0,0) north; +y=north, +x=east.\n"
             ) if is_active else "",
+            observation_instructions=observation_instructions,
             action_instructions=action_instructions,
             format_instructions=format_instructions,
         )
@@ -214,6 +224,49 @@ class PromptManager:
             )
         else:
             prompt += f"\nStrictly follow this format:\n{ANSWER_LABEL}\n[JSON cognitive map only]"
+        return prompt
+
+    def get_perception_prompt(self) -> str:
+        """Prompt asking agent to describe its current FOV as local cogmap JSON."""
+        prompt = (
+            "Before your next action, describe what you currently see.\n\n"
+            + LOCAL_PERCEPTION_PROMPT
+        )
+        if self.enable_think:
+            prompt += (
+                f"\nStrictly follow this format:\n{THINK_LABEL}\n"
+                "[Your thoughts on what you see]\n"
+                f"{ANSWER_LABEL}\n[JSON local perception only]"
+            )
+        else:
+            prompt += f"\nStrictly follow this format:\n{ANSWER_LABEL}\n[JSON local perception only]"
+        return prompt
+
+    def get_perception_feedback(self, passed: bool, score: float, threshold: float,
+                                n_visible: int, n_reported: int, retries_left: int) -> str:
+        """Feedback after a perception attempt."""
+        if passed:
+            return "Perception accepted. Now choose your next action."
+        msg = f"Perception inaccurate (score: {score:.2f}, need ≥ {threshold:.2f})."
+        if n_visible > 0:
+            msg += f" You reported {n_reported} of {n_visible} visible objects."
+        if retries_left > 0:
+            msg += f" Please try again. [Retry {self.config.max_perception_retries - retries_left + 1}/{self.config.max_perception_retries}]"
+        else:
+            msg += " No retries remaining. Skipping action this turn."
+        return msg
+
+    def get_eval_task_prompt(self, question: str) -> str:
+        """Wrap an eval task question for the agent."""
+        prompt = f"## Evaluation Question\n\nBased on your exploration, answer the following:\n\n{question}"
+        if self.enable_think:
+            prompt += (
+                f"\n\nStrictly follow this format:\n{THINK_LABEL}\n"
+                "[Your reasoning]\n"
+                f"{ANSWER_LABEL}\n[your answer only]"
+            )
+        else:
+            prompt += f"\n\nStrictly follow this format:\n{ANSWER_LABEL}\n[your answer only]"
         return prompt
 
     # ------------------------------------------------------------------

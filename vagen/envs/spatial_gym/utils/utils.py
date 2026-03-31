@@ -12,10 +12,8 @@ THINK_LABEL = "THINK:"
 ANSWER_LABEL = "FINAL ANSWER:"
 
 _DEG_TO_VEC = {
-    0: (0, 1),
-    90: (1, 0),
-    180: (0, -1),
-    270: (-1, 0),
+    0: (0, 1), 45: (1, 1), 90: (1, 0), 135: (1, -1),
+    180: (0, -1), 225: (-1, -1), 270: (-1, 0), 315: (-1, 1),
 }
 _VEC_TO_DEG = {v: k for k, v in _DEG_TO_VEC.items()}
 
@@ -185,10 +183,13 @@ def execute_exploration_action(
             exp_log.agent_state = None
 
         # Expose agent state for downstream consumers (e.g. graph builders).
+        # Use np.sign for orientation to correctly handle diagonal float vectors
+        # like (0.707, 0.707) → (1, 1) instead of int() which gives (0, 0).
         info["pos"] = [int(exploration_manager.agent.pos[0]),
                        int(exploration_manager.agent.pos[1])]
-        info["ori"] = [int(exploration_manager.agent.ori[0]),
-                       int(exploration_manager.agent.ori[1])]
+        _ori = exploration_manager.agent.ori
+        info["ori"] = [int(np.sign(_ori[0])) if abs(_ori[0]) > 1e-6 else 0,
+                       int(np.sign(_ori[1])) if abs(_ori[1]) > 1e-6 else 0]
         info["is_action_fail"] = bool(exp_log.is_action_fail) if exp_log else False
         info["action_executed"] = [r.action_command for r in action_results]
         if action_sequence.final_action and action_sequence.final_action.is_term():
@@ -240,11 +241,15 @@ def compute_shortest_path(
     Returns a list of actions like [('rotate', 90), ('jumpto', 'lamp'), ...].
     If target_ori is provided, the path will include final rotation to match the orientation.
     """
+    def _snap_ori(ori):
+        """Snap float orientation vector to integer sign tuple, e.g. (0.707, 0.707) -> (1, 1)."""
+        return tuple(int(np.sign(x)) if abs(x) > 1e-6 else 0 for x in ori)
+
     start_pos = tuple(map(int, start_pos))
-    start_ori = tuple(map(int, start_ori))
+    start_ori = _snap_ori(start_ori)
     target_pos = tuple(map(int, target_pos))
     if target_ori is not None:
-        target_ori = tuple(map(int, target_ori))
+        target_ori = _snap_ori(target_ori)
 
     # State: (pos, ori), value: (steps, parent_state, action_to_reach_here)
     queue = deque([(start_pos, start_ori, [])])  # (pos, ori, action_list)
@@ -265,7 +270,7 @@ def compute_shortest_path(
             if target_ori is None:
                 # No target orientation specified, we're done
                 return actions
-            elif tuple(int(x) for x in ori) == target_ori:
+            elif _snap_ori(ori) == target_ori:
                 # Position and orientation both match
                 return actions
             # Position matches but orientation doesn't - continue searching
@@ -276,8 +281,8 @@ def compute_shortest_path(
         cell = room.get_cell_info(int(pos[0]), int(pos[1]))
         temp_agent.room_id = cell.get("room_id")
 
-        cur_deg = _VEC_TO_DEG.get(tuple(int(x) for x in ori), 0)
-        for delta in (90, -90, 180):
+        cur_deg = _VEC_TO_DEG.get(_snap_ori(ori), 0)
+        for delta in (45, -45, 90, -90, 135, -135, 180):
             new_deg = (cur_deg + int(delta)) % 360
             new_ori = _DEG_TO_VEC.get(new_deg, ori)
             key = (pos, new_ori)

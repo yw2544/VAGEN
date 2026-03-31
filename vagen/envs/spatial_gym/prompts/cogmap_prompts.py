@@ -29,3 +29,33 @@ Represent the scene as a JSON map.
 }
 ```
 """
+
+LOCAL_PERCEPTION_PROMPT = """\
+## Local Perception (JSON)
+
+Describe all objects and doors you currently see in your field of view.
+
+### Schema
+- position: [x, y] integers relative to your current position
+- facing: object's front face direction "+x|-x|+y|-y"
+
+### Frame
+- Origin [0, 0] is your current position.
+- +y: your facing direction (forward)
+- +x: right, -x: left, -y: backward
+
+### Rules
+- Include ALL visible objects and doors in your FOV.
+- Use local axes for facing (+x/-x/+y/-y), NOT compass directions.
+
+### Example
+```json
+{
+    "origin": "agent",
+    "objects": {
+        "red chair": {"position": [1, 2], "facing": "-x"},
+        "door A": {"position": [-1, 3], "facing": "+x"}
+    }
+}
+```
+"""

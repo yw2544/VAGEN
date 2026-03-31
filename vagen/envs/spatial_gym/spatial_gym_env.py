@@ -1,4 +1,5 @@
 import numpy as np
+from enum import Enum
 from typing import List, Dict, Any, Optional, Tuple
 
 from vagen.envs.gym_image_env import GymImageEnv
@@ -12,14 +13,22 @@ from .utils.room_utils import initialize_room_from_json
 from .utils.utils import parse_llm_response, execute_exploration_action, get_agent_view
 from .utils.image_handler import ImageHandler
 from .actions.actions import configure_actions
+from .evaluation.task_types import EvalTaskType
 from gymnasium.utils import seeding
 
+
+class EnvPhase(Enum):
+    EXPLORATION_PERCEPTION = "exploration_perception"
+    EXPLORATION_ACTION = "exploration_action"
+    COGMAP = "cogmap"
+    EVAL_TASK = "eval_task"
+    DONE = "done"
 
 
 class SpatialGym(GymImageEnv):
     """
-    Spatial Gym Environment (exploration only).
-    Adapts ToS to VAGEN's GymImageEnv interface.
+    Spatial Gym Environment.
+    Supports optional perception validation and post-exploration eval tasks.
     """
     def __init__(self, env_config: Dict[str, Any]):
         super().__init__(env_config)
@@ -37,17 +46,31 @@ class SpatialGym(GymImageEnv):
         self.prompter: PromptManager = PromptManager(self.config)
         self.action_classes = configure_actions('exploration')
 
-        self.is_exploration_phase = None
-        self.remaining_exp_steps = None
+        # State
+        self.phase: EnvPhase = EnvPhase.EXPLORATION_ACTION
+        self.remaining_exp_steps: int = 0
         self.render_cache = None
-        self.current_turn_number = None
-        self.observed_image_paths: List[str] = None
-        self.awaiting_cogmap_output = None
+        self.current_turn_number: int = 0      # total step() calls (including perception)
+        self.effective_turns: int = 0           # only action + cogmap + eval turns (NOT perception)
+        self.observed_image_paths: List[str] = []
+        self.forced_term_occurred: bool = False
 
+        # Room / exploration
         self.initial_room = None
         self.initial_agent = None
         self.exploration_manager = None
-        self.forced_term_occurred = False
+
+        # Perception state
+        self.perception_retries_left: int = 0
+        self.best_perception_score: float = 0.0
+
+        # Eval task state
+        self.eval_task_queue: List[Tuple] = []  # [(task, question), ...]
+        self.eval_task_scores: List[float] = []
+
+        # Tracks whether last action turn had observe + visible objects
+        self._last_action_had_observe: bool = False
+        self._last_visible_objects: List[str] = []
 
     def _generate_initial_observation(self) -> Tuple[Dict[str, Any], Any]:
         """Generate initial observation based on exploration type."""
@@ -113,10 +136,20 @@ class SpatialGym(GymImageEnv):
 
         self.remaining_exp_steps = self.config.max_exp_steps
         self.current_turn_number = 0
+        self.effective_turns = 0
         self.observed_image_paths = []
-        self.awaiting_cogmap_output = False
-        self.is_exploration_phase = True
         self.forced_term_occurred = False
+        self.phase = EnvPhase.EXPLORATION_ACTION
+
+        # Perception state reset
+        self.perception_retries_left = 0
+        self.best_perception_score = 0.0
+        self._last_action_had_observe = False
+        self._last_visible_objects = []
+
+        # Eval task state reset
+        self.eval_task_queue = []
+        self.eval_task_scores = []
 
         BaseAction.set_field_of_view(self.config.field_of_view)
         self.exploration_manager = ExplorationManager(
@@ -132,39 +165,195 @@ class SpatialGym(GymImageEnv):
         obs, _ = self._generate_initial_observation()
         self.render_cache = obs
         self.observed_image_paths = []
+
+        # For active exploration, check if initial FOV has visible objects for perception
+        if self.config.exp_type == 'active' and self._should_do_perception_initial():
+            self.phase = EnvPhase.EXPLORATION_PERCEPTION
+            self.perception_retries_left = self.config.max_perception_retries
+            self.best_perception_score = 0.0
+            # Append current FOV image + perception prompt to initial observation.
+            # obs_str already has 2 <image> placeholders (instruction + label).
+            # We add a 3rd placeholder matching the appended FOV image.
+            if self.config.render_mode == 'vision' and self.image_handler is not None:
+                image, image_path = get_agent_view(
+                    self.exploration_manager,
+                    self.exploration_manager.agent.pos,
+                    self.exploration_manager.agent.ori,
+                    self.image_handler,
+                    seed=self.current_seed,
+                )
+                mm = obs.get('multi_modal_input', {})
+                imgs = list(mm.get(self.config.image_placeholder, []))
+                imgs.append(image)
+                obs['multi_modal_input'] = {self.config.image_placeholder: imgs}
+                # Add matching placeholder in text so image count == placeholder count
+                obs['obs_str'] += f'\n\nYour current view:\n{self.config.image_placeholder}'
+            obs['obs_str'] += '\n\n' + self.prompter.get_perception_prompt()
+
         return obs, info
 
+    def _should_do_perception_initial(self) -> bool:
+        """Check if perception should trigger on the very first turn."""
+        if not self.config.require_perception:
+            return False
+        # Check if initial FOV has visible objects
+        from .actions.actions import ObserveAction
+        obs_result = ObserveAction().execute(
+            self.exploration_manager.exploration_room, self.exploration_manager.agent
+        )
+        visible = obs_result.data.get('visible_objects', []) if obs_result.success else []
+        if visible:
+            self._last_action_had_observe = True
+            self._last_visible_objects = list(visible)
+            return True
+        return False
+
+    def _should_do_perception(self) -> bool:
+        """Check if perception should trigger before next action turn."""
+        return (
+            self.config.require_perception
+            and self._last_action_had_observe
+            and len(self._last_visible_objects) > 0
+        )
+
+    # ------------------------------------------------------------------
+    # step() dispatcher
+    # ------------------------------------------------------------------
+
     async def step(self, action_str: str) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
-        """Process agent actions in the spatial gym environment."""
         self.current_turn_number += 1
+        is_perception = (self.phase == EnvPhase.EXPLORATION_PERCEPTION)
 
-        if self.awaiting_cogmap_output:
-            _, cogmap_answer, _ = parse_llm_response(
-                action_str, enable_think=bool(self.config.prompt_config.get('enable_think', True))
+        if is_perception:
+            result = self._handle_perception(action_str)
+        elif self.phase == EnvPhase.EXPLORATION_ACTION:
+            self.effective_turns += 1
+            result = self._handle_action(action_str)
+        elif self.phase == EnvPhase.COGMAP:
+            self.effective_turns += 1
+            result = self._handle_cogmap(action_str)
+        elif self.phase == EnvPhase.EVAL_TASK:
+            self.effective_turns += 1
+            result = self._handle_eval_task(action_str)
+        else:
+            raise RuntimeError(f"step() called in unexpected phase: {self.phase}")
+
+        # Inject effective_turns into info so external loop can optionally use it
+        obs, reward, done, info = result
+        info['effective_turns'] = self.effective_turns
+        info['is_validation_turn'] = is_perception
+        return obs, reward, done, info
+
+    # ------------------------------------------------------------------
+    # Phase handlers
+    # ------------------------------------------------------------------
+
+    def _handle_perception(self, action_str: str):
+        """Validate agent's local cogmap perception of current FOV."""
+        _, perception_answer, _ = parse_llm_response(
+            action_str, enable_think=bool(self.config.prompt_config.get('enable_think', True))
+        )
+        cogmap_str = perception_answer if perception_answer else action_str
+
+        scores = CognitiveMapManager.score_local_cogmap(
+            cogmap_str,
+            self.exploration_manager.exploration_room,
+            self.exploration_manager.agent,
+        )
+        overall = scores['overall']
+        self.best_perception_score = max(self.best_perception_score, overall)
+        passed = overall >= self.config.perception_pass_threshold
+
+        # Count how many objects the agent reported vs ground truth visible
+        n_visible = len(self._last_visible_objects)
+        # Estimate reported count from the JSON
+        n_reported = self._count_reported_objects(cogmap_str)
+
+        if passed:
+            # Proceed to action turn
+            self.phase = EnvPhase.EXPLORATION_ACTION
+            feedback = self.prompter.get_perception_feedback(
+                True, overall, self.config.perception_pass_threshold, n_visible, n_reported, self.perception_retries_left
             )
-            cogmap_str = cogmap_answer if cogmap_answer else action_str
-            cogmap_scores = CognitiveMapManager.score_global_cogmap(
-                cogmap_str,
-                self.exploration_manager.exploration_room,
-                self.exploration_manager.agent,
-                list(self.exploration_manager.observed_items),
-            )
-            n_total = len(self.exploration_manager.node_names)
-            n_observed = len(self.exploration_manager.observed_nodes)
-            exploration_coverage = n_observed / n_total if n_total > 0 else 1.0
-            _, reward, info = CognitiveMapManager.compute_cogmap_reward(
-                cogmap_scores, exploration_coverage, forced_term=self.forced_term_occurred,
-            )
-            obs = {'obs_str': self.prompter.task_finished_message()}
+            obs = {'obs_str': feedback + '\n' + self.prompter.get_format_footer(True)}
+            # Re-attach the FOV image so agent can plan actions
+            if self.config.render_mode == 'vision' and self.image_handler is not None:
+                image, image_path = get_agent_view(
+                    self.exploration_manager,
+                    self.exploration_manager.agent.pos,
+                    self.exploration_manager.agent.ori,
+                    self.image_handler,
+                    seed=self.current_seed,
+                )
+                obs['multi_modal_input'] = {self.config.image_placeholder: [image]}
+                if image_path:
+                    self.observed_image_paths.append(image_path)
             self.render_cache = obs
-            self.awaiting_cogmap_output = False
-            return obs, reward, True, info
+            return obs, 0.0, False, {'perception_passed': True, 'perception_score': overall}
 
+        # Failed
+        self.perception_retries_left -= 1
+        if self.perception_retries_left >= 0:
+            # Retry with same FOV
+            feedback = self.prompter.get_perception_feedback(
+                False, overall, self.config.perception_pass_threshold, n_visible, n_reported, self.perception_retries_left
+            )
+            obs = {'obs_str': feedback + '\n\n' + self.prompter.get_perception_prompt()}
+            # Re-show FOV image
+            if self.config.render_mode == 'vision' and self.image_handler is not None:
+                image, _ = get_agent_view(
+                    self.exploration_manager,
+                    self.exploration_manager.agent.pos,
+                    self.exploration_manager.agent.ori,
+                    self.image_handler,
+                    seed=self.current_seed,
+                )
+                obs['multi_modal_input'] = {self.config.image_placeholder: [image]}
+            self.render_cache = obs
+            return obs, 0.0, False, {'perception_passed': False, 'perception_score': overall, 'perception_retry': True}
+
+        # All retries exhausted — consume 1 step, skip action
+        self.remaining_exp_steps -= 1
+        reward = -0.1 - self.config.perception_fail_penalty
+
+        if self.remaining_exp_steps <= 0:
+            # Budget exhausted, go to cogmap
+            return self._enter_cogmap_phase(forced_term=True, extra_reward=reward)
+
+        # Stay in place, next turn. Check if perception should trigger again (same pos, same FOV)
+        if self._should_do_perception():
+            self.phase = EnvPhase.EXPLORATION_PERCEPTION
+            self.perception_retries_left = self.config.max_perception_retries
+            self.best_perception_score = 0.0
+            feedback = self.prompter.get_perception_feedback(
+                False, overall, self.config.perception_pass_threshold, n_visible, n_reported, 0
+            )
+            obs_str = feedback + f"\n{self.prompter.steps_left_message(self.remaining_exp_steps)}"
+            obs_str += '\n\n' + self.prompter.get_perception_prompt()
+            obs = {'obs_str': obs_str}
+            if self.config.render_mode == 'vision' and self.image_handler is not None:
+                image, _ = get_agent_view(
+                    self.exploration_manager,
+                    self.exploration_manager.agent.pos,
+                    self.exploration_manager.agent.ori,
+                    self.image_handler,
+                    seed=self.current_seed,
+                )
+                obs['multi_modal_input'] = {self.config.image_placeholder: [image]}
+        else:
+            self.phase = EnvPhase.EXPLORATION_ACTION
+            obs = {'obs_str': self.prompter.steps_left_message(self.remaining_exp_steps) + '\n' + self.prompter.get_format_footer(True)}
+
+        self.render_cache = obs
+        return obs, reward, False, {'perception_passed': False, 'perception_score': overall, 'perception_exhausted': True}
+
+    def _handle_action(self, action_str: str):
+        """Execute exploration action (existing logic, extracted from old step())."""
         _, action, _ = parse_llm_response(
             action_str, enable_think=bool(self.config.prompt_config.get('enable_think', True))
         )
 
-        obs, reward, done, info, exp_log, self.remaining_exp_steps, self.awaiting_cogmap_output, image_path = (
+        obs, reward, done, info, exp_log, self.remaining_exp_steps, awaiting_cogmap, image_path = (
             execute_exploration_action(
                 action,
                 self.exploration_manager,
@@ -185,8 +374,196 @@ class SpatialGym(GymImageEnv):
         else:
             self.observed_image_paths = []
 
+        # Track whether this action ended with observe and had visible objects
+        self._last_action_had_observe = False
+        self._last_visible_objects = []
+        if exp_log and not awaiting_cogmap:
+            self._last_visible_objects = list(exp_log.visible_objects or [])
+            self._last_action_had_observe = len(self._last_visible_objects) > 0 or bool(exp_log.visible_objects is not None)
+            # More precise: check if an observe action was in the executed actions
+            executed = info.get('action_executed', [])
+            self._last_action_had_observe = any('Observe' in str(a) for a in executed)
+
+        if awaiting_cogmap:
+            # Transition to cogmap phase
+            self.phase = EnvPhase.COGMAP
+        elif not done and self._should_do_perception():
+            # Transition to perception phase for next turn
+            self.phase = EnvPhase.EXPLORATION_PERCEPTION
+            self.perception_retries_left = self.config.max_perception_retries
+            self.best_perception_score = 0.0
+            # Append perception prompt to the observation
+            obs['obs_str'] += '\n\n' + self.prompter.get_perception_prompt()
+
         self.render_cache = obs
         return obs, reward, done, info
+
+    def _handle_cogmap(self, action_str: str):
+        """Score global cognitive map (existing logic, extracted from old step())."""
+        _, cogmap_answer, _ = parse_llm_response(
+            action_str, enable_think=bool(self.config.prompt_config.get('enable_think', True))
+        )
+        cogmap_str = cogmap_answer if cogmap_answer else action_str
+        cogmap_scores = CognitiveMapManager.score_global_cogmap(
+            cogmap_str,
+            self.exploration_manager.exploration_room,
+            self.exploration_manager.agent,
+            list(self.exploration_manager.observed_items),
+        )
+        n_total = len(self.exploration_manager.node_names)
+        n_observed = len(self.exploration_manager.observed_nodes)
+        exploration_coverage = n_observed / n_total if n_total > 0 else 1.0
+        _, reward, info = CognitiveMapManager.compute_cogmap_reward(
+            cogmap_scores, exploration_coverage, forced_term=self.forced_term_occurred,
+        )
+
+        # Check if we should do eval tasks
+        if self.config.enable_eval_tasks:
+            self._prepare_eval_task_queue()
+            if self.eval_task_queue:
+                # Serve first eval task
+                self.phase = EnvPhase.EVAL_TASK
+                task, question = self.eval_task_queue[0]
+                obs = {'obs_str': self.prompter.get_eval_task_prompt(question)}
+                # Attach image if vision eval task needs it
+                obs = self._attach_eval_task_image(obs, task)
+                self.render_cache = obs
+                # Store cogmap reward to add later
+                self._cogmap_reward = reward
+                self._cogmap_info = info
+                return obs, 0.0, False, {'cogmap_done': True, **info}
+
+        obs = {'obs_str': self.prompter.task_finished_message()}
+        self.render_cache = obs
+        self.phase = EnvPhase.DONE
+        return obs, reward, True, info
+
+    def _handle_eval_task(self, action_str: str):
+        """Evaluate agent's answer to current eval task, serve next or finish."""
+        _, answer, _ = parse_llm_response(
+            action_str, enable_think=bool(self.config.prompt_config.get('enable_think', True))
+        )
+        answer_str = answer if answer else action_str
+
+        # Evaluate current task
+        task, _ = self.eval_task_queue.pop(0)
+        try:
+            score, eval_info = task.evaluate(answer_str)
+            # Keep continuous score (float); bool True/False → 1.0/0.0
+            self.eval_task_scores.append(float(score) if score is not None else 0.0)
+        except Exception:
+            self.eval_task_scores.append(0.0)
+            eval_info = {}
+
+        if self.eval_task_queue:
+            # Serve next task
+            next_task, next_question = self.eval_task_queue[0]
+            obs = {'obs_str': self.prompter.get_eval_task_prompt(next_question)}
+            obs = self._attach_eval_task_image(obs, next_task)
+            self.render_cache = obs
+            return obs, 0.0, False, {'eval_task_correct': bool(self.eval_task_scores[-1]), **eval_info}
+
+        # All tasks done — compute final reward
+        eval_reward = 0.0
+        if self.eval_task_scores:
+            mean_score = sum(self.eval_task_scores) / len(self.eval_task_scores)
+            eval_reward = self.config.eval_task_reward_scale * mean_score
+
+        total_reward = self._cogmap_reward + eval_reward
+        # Build per-task score dict: eval_dir, eval_rot, etc.
+        eval_per_task = {}
+        for i, task_config in enumerate(self.config.eval_tasks):
+            if i < len(self.eval_task_scores):
+                eval_per_task[f"eval_{task_config['task_type']}"] = self.eval_task_scores[i]
+        info = {
+            **self._cogmap_info,
+            'eval_task_scores': self.eval_task_scores,
+            'eval_task_reward': eval_reward,
+            'eval_task_mean': mean_score if self.eval_task_scores else 0.0,
+            **eval_per_task,
+        }
+
+        obs = {'obs_str': self.prompter.task_finished_message()}
+        self.render_cache = obs
+        self.phase = EnvPhase.DONE
+        return obs, total_reward, True, info
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _enter_cogmap_phase(self, forced_term: bool = False, extra_reward: float = 0.0):
+        """Transition into cogmap phase."""
+        self.phase = EnvPhase.COGMAP
+        if forced_term:
+            self.forced_term_occurred = True
+        obs = {'obs_str': self.prompter.get_cogmap_output_prompt()}
+        self.render_cache = obs
+        info = {'forced_term': forced_term} if forced_term else {}
+        return obs, extra_reward, False, info
+
+    def _prepare_eval_task_queue(self):
+        """Instantiate eval tasks from config."""
+        self.eval_task_queue = []
+        for task_config in self.config.eval_tasks:
+            task_type = task_config['task_type']
+            task_kwargs = task_config.get('task_kwargs', {}) or {}
+            try:
+                task = EvalTaskType.create_task(
+                    task_type, self.np_random,
+                    self.exploration_manager.exploration_room,
+                    self.exploration_manager.agent,
+                    task_kwargs,
+                )
+                question = task.generate_question()
+                self.eval_task_queue.append((task, question))
+            except (ValueError, Exception):
+                continue  # Skip tasks that fail to generate
+
+    def _attach_eval_task_image(self, obs: dict, task) -> dict:
+        """Attach image to obs if the eval task question references <image>.
+
+        For vision eval tasks the image must match the pose described in the
+        question, which is not always ``task.agent`` (create_task resets to
+        init).  We check ``eval_data.answer`` for an explicit final pose first.
+        """
+        if self.config.image_placeholder not in str(task.eval_data.question):
+            return obs
+        if self.image_handler is None:
+            return obs
+        # Determine the correct viewing pose for the image
+        answer = task.eval_data.answer
+        if isinstance(answer, dict) and 'final_pos' in answer and 'final_ori' in answer:
+            import numpy as np
+            pos = np.asarray(answer['final_pos'], dtype=float)
+            ori = np.asarray(answer['final_ori'], dtype=float)
+        else:
+            pos = task.agent.pos
+            ori = task.agent.ori
+        try:
+            image, _ = get_agent_view(
+                self.exploration_manager, pos, ori,
+                self.image_handler, seed=self.current_seed,
+            )
+            obs['multi_modal_input'] = {self.config.image_placeholder: [image]}
+        except Exception:
+            pass
+        return obs
+
+    def _count_reported_objects(self, cogmap_str: str) -> int:
+        """Estimate how many objects the agent reported in their local cogmap JSON."""
+        import json, re
+        try:
+            # Try to extract JSON
+            match = re.search(r'\{.*\}', cogmap_str, re.DOTALL)
+            if match:
+                data = json.loads(match.group())
+                objects = data.get('objects', data)
+                if isinstance(objects, dict):
+                    return len([k for k in objects.keys() if k != 'origin'])
+        except Exception:
+            pass
+        return 0
 
     def render(self):
         return self.render_cache

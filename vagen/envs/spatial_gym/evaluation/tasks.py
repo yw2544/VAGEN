@@ -16,6 +16,14 @@ from ..utils.action_utils import action_results_to_text
 from ..core.relationship import (PairwiseRelationshipDiscrete, OrientationRel)
 from ..utils.utils import hash
 
+
+def _snap_ori(ori) -> Tuple[int, int]:
+    """Snap a float orientation vector to integer sign tuple.
+    E.g. (0.707, 0.707) -> (1, 1), (0, -1) -> (0, -1).
+    Safe on both float unit vectors and integer vectors.
+    """
+    return tuple(int(np.sign(x)) if abs(x) > 1e-6 else 0 for x in ori)
+
 # Helper for orientation
 def _agent_relative_orientation(agent_ori: np.ndarray, target_ori: np.ndarray) -> str:
     from ..core.relationship import OrientationRel

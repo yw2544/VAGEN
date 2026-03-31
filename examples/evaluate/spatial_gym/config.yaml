@@ -8,17 +8,26 @@ envs:
     n_envs: 50
     tag_id: spatial_gym_2room
     seed: [400, 449, 1]
-    max_turns: 16
+    max_turns: 25
     config:
       exp_type: active
       render_mode: vision
       max_exp_steps: 15
       data_dir: ../../../vagen/envs/spatial_gym/room_data/2-room
       eval_tasks:
+        - task_type: dir
         - task_type: rot
-          task_kwargs: {}
+        - task_type: pov
+        - task_type: e2a
+        - task_type: fwd_loc
+        - task_type: fwd_fov
+        - task_type: bwd_pov_vision
+        - task_type: bwd_loc_vision
+        - task_type: bwd_nav_vision
       prompt_config:
         enable_think: true
+      require_perception: true
+      enable_eval_tasks: true
     chat_config:
       temperature: 0.0
       max_tokens: 32768
@@ -26,7 +35,7 @@ envs:
 
 experiment:
   dump_dir: ./rollouts/spatial_gym_2room
-  default_max_turns: 16
+  default_max_turns: 25
 
 run:
   backend: "openai"

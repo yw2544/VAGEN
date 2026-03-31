@@ -3,7 +3,7 @@ envs:
     n_envs: 50
     data_source: spatial_gym           # nickname for logging
     seed: [0, 49, 1]         # sample n_envs seeds from seed[0] to seed[1], each used at most seed[2] times
-    max_turns: 11              # max interaction turns (15 explore steps + 1 cogmap turn)
+    max_turns: 20              # max_exp_steps(10) + cogmap(1) + eval_tasks(9); perception not counted
     response_length_per_turn: 2048
     config:
       exp_type: active
@@ -11,7 +11,16 @@ envs:
       max_exp_steps: 10
       data_dir: vagen/envs/spatial_gym/room_data/1-room
       eval_tasks:
+        - task_type: dir
         - task_type: rot
-          task_kwargs: {}
+        - task_type: pov
+        - task_type: e2a
+        - task_type: fwd_loc
+        - task_type: fwd_fov
+        - task_type: bwd_pov_vision
+        - task_type: bwd_loc_vision
+        - task_type: bwd_nav_vision
       prompt_config:
         enable_think: true
+      require_perception: true
+      enable_eval_tasks: true

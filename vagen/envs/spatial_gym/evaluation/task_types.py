@@ -15,23 +15,13 @@ class EvalTaskType(Enum):
     DIR = ("dir", "DirectionEvaluationTask")
     ROT = ("rot", "RotEvaluationTask")
     POV = ("pov", "PovEvaluationTask")
-    BWD_POV_TEXT = ("bwd_pov_text", "BackwardPovTextEvaluationTask")
     E2A = ("e2a", "AlloMappingEvaluationTask")
     FWD_LOC = ("fwd_loc", "Location2ViewEvaluationTask")
-    BWD_LOC_TEXT = ("bwd_loc_text", "View2LocationTextEvaluationTask")
     FWD_FOV = ("fwd_fov", "Action2ViewEvaluationTask")
-    BWD_NAV_TEXT = ("bwd_nav_text", "View2ActionTextEvaluationTask")
-
     # vision
     BWD_POV_VISION = ("bwd_pov_vision", "BackwardPovVisionEvaluationTask")
     BWD_LOC_VISION = ("bwd_loc_vision", "View2LocationVisionEvaluationTask")
     BWD_NAV_VISION = ("bwd_nav_vision", "View2ActionVisionEvaluationTask")
-
-    # useless
-    BWD_NAV_VISION_OLD = ("bwd_nav_vision", "Location2ActionVisionEvaluationTask")  # deprecated
-    ROT_DUAL = ("rot_dual", "RotDualEvaluationTask")
-    BWD_NAV_REV = ("bwd_nav_rev", "View2ActionRevEvaluationTask")
-    DIR_ANCHOR = ("dir_anchor", "DirectionPov")
     
     def __init__(self, short_name: str, class_name: str):
         self.short_name = short_name
@@ -50,33 +40,28 @@ class EvalTaskType(Enum):
     @classmethod
     def excluded_from_average(cls) -> set[str]:
         """Task identifiers (short or class name) excluded from overall evaluation averages."""
-        excluded = (cls.ROT_DUAL, cls.BWD_POV_VISION, cls.BWD_NAV_VISION, cls.BWD_LOC_VISION, cls.BWD_NAV_VISION_OLD)
+        excluded = (cls.BWD_POV_VISION, cls.BWD_NAV_VISION, cls.BWD_LOC_VISION)
         return {t.short_name for t in excluded} | {t.class_name for t in excluded}
     
     @classmethod
     def get_task_map(cls) -> Dict[str, 'Type[BaseEvaluationTask]']:
         """Get mapping from short names to task classes."""
         # Import here to avoid circular imports
-        from .direction import DirectionEvaluationTask, PovEvaluationTask, BackwardPovTextEvaluationTask, BackwardPovVisionEvaluationTask, DirectionPov
+        from .direction import DirectionEvaluationTask, PovEvaluationTask, BackwardPovVisionEvaluationTask
         from .rotation import RotEvaluationTask
         from .e2a import AlloMappingEvaluationTask
-        from .localization import Location2ViewEvaluationTask, View2LocationTextEvaluationTask, View2LocationVisionEvaluationTask
-        from .navigation_tasks import Action2ViewEvaluationTask, View2ActionTextEvaluationTask, View2ActionVisionEvaluationTask, View2ActionRevEvaluationTask
-        
+        from .localization import Location2ViewEvaluationTask, View2LocationVisionEvaluationTask
+        from .navigation_tasks import Action2ViewEvaluationTask, View2ActionVisionEvaluationTask
+
         task_map = {
             cls.DIR.short_name: DirectionEvaluationTask,
             cls.ROT.short_name: RotEvaluationTask,
             cls.POV.short_name: PovEvaluationTask,
-            cls.DIR_ANCHOR.short_name: DirectionPov,
             cls.E2A.short_name: AlloMappingEvaluationTask,
             cls.FWD_LOC.short_name: Location2ViewEvaluationTask,
-            cls.BWD_LOC_TEXT.short_name: View2LocationTextEvaluationTask,
             cls.BWD_LOC_VISION.short_name: View2LocationVisionEvaluationTask,
             cls.FWD_FOV.short_name: Action2ViewEvaluationTask,
-            cls.BWD_NAV_TEXT.short_name: View2ActionTextEvaluationTask,
             cls.BWD_NAV_VISION.short_name: View2ActionVisionEvaluationTask,
-            cls.BWD_NAV_REV.short_name: View2ActionRevEvaluationTask,
-            cls.BWD_POV_TEXT.short_name: BackwardPovTextEvaluationTask,
             cls.BWD_POV_VISION.short_name: BackwardPovVisionEvaluationTask,
         }
         return task_map
@@ -85,8 +70,8 @@ class EvalTaskType(Enum):
     def get_class_map(cls) -> Dict[str, 'Type[BaseEvaluationTask]']:
         """Get mapping from class names to task classes."""
         task_map = cls.get_task_map()
-        return {task.class_name: task_class for task, task_class in 
-                zip(cls, task_map.values())}
+        return {cls.from_short_name(short).class_name: task_class
+                for short, task_class in task_map.items()}
 
     @classmethod
     def resolve_class_name(cls, task_name: str) -> str:
@@ -107,9 +92,9 @@ class EvalTaskType(Enum):
             "Action2LocationTextEvaluationTask": "Location2ViewEvaluationTask",
             "Action2LocationVisionEvaluationTask": "Location2ViewEvaluationTask",
 
-            # Backward: Location2Action (Old) -> View2Location (New)
-            "Location2ActionEvaluationTask": "View2LocationTextEvaluationTask", 
-            "Location2ActionTextEvaluationTask": "View2LocationTextEvaluationTask",
+            # Backward: Location2Action (Old) -> View2Location (New, vision only)
+            "Location2ActionEvaluationTask": "View2LocationVisionEvaluationTask",
+            "Location2ActionTextEvaluationTask": "View2LocationVisionEvaluationTask",
             "Location2ActionVisionEvaluationTask": "View2LocationVisionEvaluationTask",
         }
         return mapping.get(task_name, task_name)

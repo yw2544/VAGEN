@@ -1255,23 +1255,32 @@ class CognitiveMapManager:
         gate_names = {g.name for g in gt_room.gates}
         
         def _norm_face_local(f, anchor_ori):
-            """For local/room sections - convert relative directions to absolute based on anchor orientation"""
+            """For local/room sections - convert relative directions (+x/-x/+y/-y)
+            to absolute cardinal (north/south/east/west) based on anchor orientation.
+
+            Uses the same rotation as transforms.rotation_matrix_from_ori (inverse)
+            to map local axes back to world axes, then snaps to nearest cardinal.
+            """
             if not isinstance(f, str):
                 return f
             s = f.strip().lower()
-            # anchor_ori is like [0,1] for north, [1,0] for east, etc.
-            if tuple(anchor_ori) == (0, 1):  # north
-                mapping = {"+x": "east", "-x": "west", "+y": "north", "-y": "south"}
-            elif tuple(anchor_ori) == (1, 0):  # east
-                mapping = {"+x": "south", "-x": "north", "+y": "east", "-y": "west"}
-            elif tuple(anchor_ori) == (0, -1):  # south
-                mapping = {"+x": "west", "-x": "east", "+y": "south", "-y": "north"}
-            elif tuple(anchor_ori) == (-1, 0):  # west
-                mapping = {"+x": "north", "-x": "south", "+y": "west", "-y": "east"}
-            else:
-                # fallback to identity
+            local_vecs = {"+x": np.array([1, 0]), "-x": np.array([-1, 0]),
+                          "+y": np.array([0, 1]), "-y": np.array([0, -1])}
+            if s not in local_vecs:
                 return s
-            return mapping.get(s, s)
+            from ..utils.cogmap.transforms import rotation_matrix_from_ori
+            R = rotation_matrix_from_ori(np.asarray(anchor_ori, dtype=float))
+            # R maps world→local, so R.T maps local→world
+            world_vec = R.T @ local_vecs[s].astype(float)
+            # Snap to nearest cardinal
+            cardinals = {"north": np.array([0, 1]), "east": np.array([1, 0]),
+                         "south": np.array([0, -1]), "west": np.array([-1, 0])}
+            best, best_dot = "north", -2.0
+            for name, cv in cardinals.items():
+                d = float(np.dot(world_vec, cv))
+                if d > best_dot:
+                    best_dot, best = d, name
+            return best
 
         def _norm_face_global(f):
             """Best-effort: normalize common variants (incl. ego terms) to cardinal directions."""
@@ -1439,6 +1448,34 @@ class CognitiveMapManager:
                     'dir': clamp(m.dir),
                     'facing': clamp(m.facing),
                     'pos': clamp(m.pos),
+                }
+        except Exception:
+            pass
+        return {'overall': 0.0, 'dir': 0.0, 'facing': 0.0, 'pos': 0.0}
+
+    @staticmethod
+    def score_local_cogmap(cogmap_str: str, room: 'Room', agent: 'Agent') -> dict:
+        """Score a local cogmap JSON against current FOV ground truth.
+
+        Args:
+            cogmap_str: Raw local cogmap string (JSON or LLM response containing JSON).
+            room: Ground-truth Room.
+            agent: Ground-truth Agent (current position/orientation).
+
+        Returns:
+            Dict with keys 'overall', 'dir', 'facing', 'pos', each in [0, 1].
+        """
+        try:
+            mgr = CognitiveMapManager()
+            turn_log = mgr.evaluate_cogmap_type(
+                cogmap_str, room, agent, observed_items=None, map_type="local",
+            )
+            if turn_log and turn_log.metrics.valid:
+                m = turn_log.metrics
+                clamp = lambda v: max(0.0, min(1.0, float(v)))
+                return {
+                    'overall': clamp(m.overall), 'dir': clamp(m.dir),
+                    'facing': clamp(m.facing), 'pos': clamp(m.pos),
                 }
         except Exception:
             pass

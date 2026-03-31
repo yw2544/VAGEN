@@ -202,20 +202,6 @@ class BaseBackwardPovEvaluationTask(BaseEvaluationTask):
         return question
 
 
-class BackwardPovTextEvaluationTask(BaseBackwardPovEvaluationTask):
-    """Identify which oriented object matches the described egocentric relation (Text)."""
-
-    def _format_observations(self, obs_list: List[Dict]) -> str:
-        descriptions = []
-        for obs in obs_list:
-            parts = [f"{obs['direction']}, {obs['distance']}"]
-            if obs.get('orientation'):
-                parts.append(obs['orientation'])
-            relation_text = ", ".join(parts)
-            descriptions.append(f"{obs['name']} is {relation_text}")
-        return "; ".join(descriptions)
-
-
 class BackwardPovVisionEvaluationTask(BaseBackwardPovEvaluationTask):
     """Identify which oriented object matches the described egocentric relation (Vision)."""
 

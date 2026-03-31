@@ -6,14 +6,22 @@ from ...core.object import Object, Agent
 
 
 def rotation_matrix_from_ori(ori: np.ndarray) -> np.ndarray:
-    ori_to_R = {
-        (0, 1): np.array([[1, 0], [0, 1]]),
-        (1, 0): np.array([[0, -1], [1, 0]]),
-        (0, -1): np.array([[-1, 0], [0, -1]]),
-        (-1, 0): np.array([[0, 1], [-1, 0]]),
-    }
-    key = tuple(int(x) for x in (ori.tolist() if hasattr(ori, "tolist") else ori))
-    return ori_to_R.get(key, ori_to_R[(0, 1)])
+    """Rotation matrix that maps world coords to a frame where `ori` points along +y.
+
+    Supports all 8 headings (cardinal + diagonal).  The matrix R satisfies:
+        R @ ori_normalized == [0, 1]   (ori becomes "forward" / +y)
+    """
+    v = np.asarray(ori, dtype=float)
+    n = float(np.linalg.norm(v))
+    if n < 1e-9:
+        return np.eye(2)
+    v = v / n
+    # v = (sin θ, cos θ) where θ is the clockwise angle from +y.
+    # We need R such that R @ v = [0, 1].
+    # R = [[cos θ, -sin θ], [sin θ, cos θ]]  with cos θ = v[1], sin θ = v[0].
+    cos_t, sin_t = float(v[1]), float(v[0])
+    return np.array([[cos_t, -sin_t],
+                     [sin_t,  cos_t]])
 
 
 def transform_point(pos_world: np.ndarray, anchor_pos: np.ndarray, anchor_ori: np.ndarray) -> np.ndarray:

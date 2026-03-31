@@ -9,7 +9,7 @@ from typing import Any, List, Tuple, Dict
 import numpy as np
 import json
 
-from .tasks import BaseEvaluationTask, retry_generate_question
+from .tasks import BaseEvaluationTask, retry_generate_question, _snap_ori
 from ..core.object import Agent, Gate
 from ..core.relationship import PairwiseRelationshipDiscrete, EgoFrontBins, StandardDistanceBins
 from ..actions import ObserveAction, RotateAction, MoveAction
@@ -57,10 +57,24 @@ VIEW_2_ACTION_REV_TEMPLATE = (
 NavAction = Tuple[str, Any]
 
 # ---- Small helpers ----
-def _closest_cardinal(vec: np.ndarray) -> np.ndarray:
-    """Return closest cardinal direction vector."""
-    basis = [np.array([0, 1]), np.array([1, 0]), np.array([0, -1]), np.array([-1, 0])]
-    dots = [float(np.dot(vec, b)) for b in basis]
+def _make_8_oris():
+    """Generate 8 unit-length orientation vectors matching Agent._validate expectations."""
+    oris = []
+    for k in range(8):
+        theta = np.deg2rad(45.0 * k)
+        oris.append((float(np.sin(theta)), float(np.cos(theta))))
+    return oris
+
+_ALL_8_ORIS_NAV = _make_8_oris()
+
+def _closest_heading(vec: np.ndarray) -> np.ndarray:
+    """Return closest of 8 heading unit vectors."""
+    basis = [np.array(o, dtype=float) for o in _ALL_8_ORIS_NAV]
+    v_norm = float(np.linalg.norm(vec))
+    if v_norm < 1e-9:
+        return np.array([0.0, 1.0])
+    # All basis vectors from _make_8_oris are already unit length
+    dots = [float(np.dot(vec / v_norm, b / np.linalg.norm(b))) for b in basis]
     return basis[int(np.argmax(dots))]
 
 
@@ -83,17 +97,29 @@ def _nearfar_phrase(index: int, total: int) -> str:
     return f"{_ordinal(index)} nearest"
 
 
+_ORI_TO_DEG_8 = {
+    (0, 1): 0, (1, 1): 45, (1, 0): 90, (1, -1): 135,
+    (0, -1): 180, (-1, -1): 225, (-1, 0): 270, (-1, 1): 315,
+}
+
 def _ori_to_deg(ori: Tuple[int, int]) -> int:
-    """Convert orientation tuple to degrees."""
-    mapping = {(0, 1): 0, (1, 0): 90, (0, -1): 180, (-1, 0): 270}
-    return mapping[tuple(int(x) for x in ori)]
+    """Convert orientation tuple to degrees (supports 8 headings)."""
+    key = tuple(int(np.sign(x)) if abs(x) > 1e-6 else 0 for x in ori)
+    return _ORI_TO_DEG_8.get(key, 0)
 
 
-def _rotate_ori(ori: Tuple[int, int], degrees: int) -> Tuple[int, int]:
-    mapping = {0: (0, 1), 90: (1, 0), 180: (0, -1), 270: (-1, 0)}
+def _deg_to_unit_vec(deg: int) -> Tuple[float, float]:
+    """Convert degrees to unit-length orientation vector."""
+    theta = np.deg2rad(float(deg))
+    return (float(np.sin(theta)), float(np.cos(theta)))
+
+_DEG_TO_ORI_8 = {deg: _deg_to_unit_vec(deg) for deg in _ORI_TO_DEG_8.values()}
+
+def _rotate_ori(ori, degrees: int):
+    """Rotate orientation by degrees, returns unit-length vector tuple."""
     cur = _ori_to_deg(ori)
     new_deg = (cur + degrees) % 360
-    return mapping.get(new_deg, ori)
+    return _DEG_TO_ORI_8.get(new_deg, ori)
 
 
 def _rotation_delta(current: Tuple[int, int], desired: Tuple[int, int]) -> int:
@@ -175,7 +201,7 @@ class BaseNavEvaluationTask(BaseEvaluationTask):
                     name = str(self.np_random.choice(non_gate or cand))
 
             target = self.room.get_object_by_name(name)
-            desired_ori = _closest_cardinal(target.pos - a.pos)
+            desired_ori = _closest_heading(target.pos - a.pos)
             delta = _rotation_delta(tuple(a.ori), tuple(desired_ori))
 
             # Add rotation only if needed
@@ -197,7 +223,7 @@ class BaseNavEvaluationTask(BaseEvaluationTask):
 
         # Align to a valid viewing orientation with at least one visible object
         valid_oris = []
-        for ori in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+        for ori in _ALL_8_ORIS_NAV:
             tmp = a.copy()
             tmp.ori = np.array(ori)
             if ObserveAction().execute(self.room, tmp).data.get('visible_objects', []):
@@ -362,6 +388,8 @@ class BaseView2ActionEvaluationTask(BaseNavEvaluationTask):
         # Store expected final state and object positions for evaluation
         init_agent = self._agent_from_init()
         object_positions = {obj.name.lower(): tuple(map(int, obj.pos)) for obj in self.room.all_objects}
+        # compute_shortest_path places an "initial_pos" stub at target_pos (end_agent.pos)
+        object_positions['initial_pos'] = tuple(map(int, end_agent.pos))
         
         # Build answer with orientations
         # Merge orientations: local visible ones + global ones if needed.
@@ -386,10 +414,10 @@ class BaseView2ActionEvaluationTask(BaseNavEvaluationTask):
 
         answer = {
             'final_pos': tuple(map(int, end_agent.pos)),
-            'final_ori': tuple(map(int, end_agent.ori)),
+            'final_ori': _snap_ori(end_agent.ori),
             'room_id': (list(end_agent.room_id) if isinstance(end_agent.room_id, (list, tuple)) else int(end_agent.room_id)) if end_agent.room_id is not None else None,
             'init_pos': tuple(map(int, init_agent.pos)),
-            'init_ori': tuple(map(int, init_agent.ori)),
+            'init_ori': _snap_ori(init_agent.ori),
             'object_positions': object_positions,
             'object_orientations': all_orientations,
             'gate_info': gate_info,
@@ -411,22 +439,11 @@ class BaseView2ActionEvaluationTask(BaseNavEvaluationTask):
         return self.eval_data.question
 
 
-class View2ActionTextEvaluationTask(BaseView2ActionEvaluationTask):
-    """Infer action sequence from final observation (text)."""
-    def _get_final_obs(self, visible: List[Dict[str, str]]) -> str:
-        obs_parts = []
-        for v in visible:
-            txt = f"{v['name']} is at {v['direction']}, {v['distance']}"
-            if v.get('orientation'):
-                txt += f", {v['orientation']}"
-            obs_parts.append(txt)
-        return "; ".join(obs_parts)
-
-
 class View2ActionVisionEvaluationTask(BaseView2ActionEvaluationTask):
     """Infer action sequence from final observation (vision)."""
     def _get_final_obs(self, visible: List[Dict[str, str]]) -> str:
         return "You observe: <image>"
+
 
 class View2ActionRevEvaluationTask(BaseNavEvaluationTask):
     """Navigate back to starting point from termination location."""
@@ -439,10 +456,12 @@ class View2ActionRevEvaluationTask(BaseNavEvaluationTask):
         # Current position is self.agent.pos (termination location)
         # Initial position is self.agent.init_pos
         start_pos = tuple(map(int, self.agent.pos))
-        start_ori = tuple(map(int, self.agent.ori))
+        start_ori = _snap_ori(self.agent.ori)
         target_pos = tuple(map(int, self.agent.init_pos))
-        target_ori = tuple(map(int, self.agent.init_ori))
+        target_ori = _snap_ori(self.agent.init_ori)
         object_positions = {obj.name: tuple(map(int, obj.pos)) for obj in self.room.all_objects}
+        # compute_shortest_path places an "initial_pos" stub at target_pos
+        object_positions['initial_pos'] = target_pos  # target_pos = agent.init_pos here
 
         # Compute shortest path
         minimal_plan = compute_shortest_path(
