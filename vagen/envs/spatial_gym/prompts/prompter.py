@@ -90,14 +90,18 @@ class PromptManager:
                 f"Always output:\n"
                 f"{THINK_LABEL}\n[Your reasoning]\n"
                 f"{ANSWER_LABEL}\n[Your answer]\n\n"
-                "`FINAL ANSWER` must be `Actions: [ ... ]`.\n\n"
+                "Follow the format specified in the current user message.\n"
+                "During exploration, `FINAL ANSWER` should be `Actions: [ ... ]`.\n"
+                "During perception, cogmap, and evaluation phases, return only the JSON or answer requested in that user message.\n\n"
                 "**Keep your response brief and concise. Avoid unnecessary verbosity.**"
             )
         else:
             format_instructions = (
                 f"Always output:\n"
                 f"{ANSWER_LABEL}\n[Your answer]\n\n"
-                "`FINAL ANSWER` must be `Actions: [ ... ]`.\n\n"
+                "Follow the format specified in the current user message.\n"
+                "During exploration, `FINAL ANSWER` should be `Actions: [ ... ]`.\n"
+                "During perception, cogmap, and evaluation phases, return only the JSON or answer requested in that user message.\n\n"
                 "**Keep your response brief and concise. Avoid unnecessary verbosity.**"
             )
 
@@ -156,8 +160,8 @@ class PromptManager:
 
         obs_str = "\n".join(lines)
 
-        if is_active:
-            obs_str = obs_str + "\n\n" + self.get_format_footer(True)
+        # NOTE: the caller (reset) is responsible for appending the correct
+        # format footer (action vs perception) depending on the phase.
 
         obs['obs_str'] = obs_str
         return obs, images_path

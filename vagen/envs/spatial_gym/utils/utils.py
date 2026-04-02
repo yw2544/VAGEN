@@ -223,8 +223,8 @@ def execute_exploration_action(
     if not obs:
         obs = {'obs_str': obs_str}
 
-    if not done and not awaiting_cogmap:
-        obs['obs_str'] += '\n' + prompter.get_format_footer(True)
+    # NOTE: the caller (_handle_action) is responsible for appending the
+    # correct format footer (action vs perception) depending on the phase.
 
     return obs, reward, done, info, exp_log, remaining_exp_steps, awaiting_cogmap, image_path
 

@@ -40,16 +40,16 @@ VIEW_2_ACTION_TEMPLATE = (
     "Then you have executed an action sequence and changed to a new location and facing direction.\n"
     "You observe the following:\n"
     "{final_obs}\n\n"
-    "What action sequence led to this final view? The action sequence must be valid and only contain move actions.\n\n"
-    "Answer format: <sequence of move actions>\n"
+    "What action sequence led to this final view? The action sequence must be valid and only contain navigation actions (JumpTo and Rotate).\n\n"
+    "Answer format: <sequence of navigation actions>\n"
     "Example: JumpTo(lamp), Rotate(90)\n"
 )
 
 VIEW_2_ACTION_REV_TEMPLATE = (
     "You are currently at the termination location.\n"
-    "What action sequence will navigate you back to your starting position? The action sequence must be valid and only contain move actions.\n\n"
+    "What action sequence will navigate you back to your starting position? The action sequence must be valid and only contain navigation actions (JumpTo and Rotate).\n\n"
     "You must end with a JumpTo(initial_pos) action.\n"
-    "Answer format: <sequence of move actions>\n"
+    "Answer format: <sequence of navigation actions>\n"
     "Example: JumpTo(lamp), Rotate(90), JumpTo(initial_pos)\n"
 )
 
@@ -418,6 +418,7 @@ class BaseView2ActionEvaluationTask(BaseNavEvaluationTask):
             'room_id': (list(end_agent.room_id) if isinstance(end_agent.room_id, (list, tuple)) else int(end_agent.room_id)) if end_agent.room_id is not None else None,
             'init_pos': tuple(map(int, init_agent.pos)),
             'init_ori': _snap_ori(init_agent.ori),
+            'init_room_id': (list(init_agent.room_id) if isinstance(init_agent.room_id, (list, tuple)) else int(init_agent.room_id)) if init_agent.room_id is not None else None,
             'object_positions': object_positions,
             'object_orientations': all_orientations,
             'gate_info': gate_info,
@@ -463,6 +464,22 @@ class View2ActionRevEvaluationTask(BaseNavEvaluationTask):
         # compute_shortest_path places an "initial_pos" stub at target_pos
         object_positions['initial_pos'] = target_pos  # target_pos = agent.init_pos here
 
+        # Build room_id mappings for visibility checks
+        object_rooms = {}
+        for obj in self.room.all_objects:
+            name = obj.name.lower()
+            if isinstance(obj.room_id, (list, tuple, np.ndarray)):
+                object_rooms[name] = [int(x) for x in obj.room_id]
+            else:
+                object_rooms[name] = int(obj.room_id)
+
+        start_room_id = getattr(self.agent, 'room_id', None)
+        if start_room_id is not None:
+            start_room_id = list(start_room_id) if isinstance(start_room_id, (list, tuple)) else int(start_room_id)
+        target_room_id = getattr(self.agent, 'init_room_id', None) or start_room_id
+        if target_room_id is not None and not isinstance(target_room_id, (int, list)):
+            target_room_id = list(target_room_id) if isinstance(target_room_id, (tuple,)) else int(target_room_id)
+
         # Compute shortest path
         minimal_plan = compute_shortest_path(
             self.room,
@@ -474,9 +491,12 @@ class View2ActionRevEvaluationTask(BaseNavEvaluationTask):
         answer = {
             'start_pos': start_pos,  # Starting from termination location
             'start_ori': start_ori,
+            'start_room_id': start_room_id,
             'target_pos': target_pos,  # Target is the initial position
             'target_ori': target_ori,
+            'target_room_id': target_room_id,
             'object_positions': object_positions,
+            'object_rooms': object_rooms,
             'minimal_plan': minimal_plan,  # Action list for shortest path
         }
 

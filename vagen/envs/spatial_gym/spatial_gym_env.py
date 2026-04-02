@@ -171,24 +171,12 @@ class SpatialGym(GymImageEnv):
             self.phase = EnvPhase.EXPLORATION_PERCEPTION
             self.perception_retries_left = self.config.max_perception_retries
             self.best_perception_score = 0.0
-            # Append current FOV image + perception prompt to initial observation.
-            # obs_str already has 2 <image> placeholders (instruction + label).
-            # We add a 3rd placeholder matching the appended FOV image.
-            if self.config.render_mode == 'vision' and self.image_handler is not None:
-                image, image_path = get_agent_view(
-                    self.exploration_manager,
-                    self.exploration_manager.agent.pos,
-                    self.exploration_manager.agent.ori,
-                    self.image_handler,
-                    seed=self.current_seed,
-                )
-                mm = obs.get('multi_modal_input', {})
-                imgs = list(mm.get(self.config.image_placeholder, []))
-                imgs.append(image)
-                obs['multi_modal_input'] = {self.config.image_placeholder: imgs}
-                # Add matching placeholder in text so image count == placeholder count
-                obs['obs_str'] += f'\n\nYour current view:\n{self.config.image_placeholder}'
+            # Append current FOV image + perception prompt.
+            self._append_fov_image(obs)
             obs['obs_str'] += '\n\n' + self.prompter.get_perception_prompt()
+        elif self.config.exp_type == 'active':
+            # No perception needed — show action format directly.
+            obs['obs_str'] += '\n\n' + self.prompter.get_format_footer(True)
 
         return obs, info
 
@@ -215,6 +203,25 @@ class SpatialGym(GymImageEnv):
             and self._last_action_had_observe
             and len(self._last_visible_objects) > 0
         )
+
+    def _append_fov_image(self, obs: dict) -> None:
+        """Append current FOV image to *obs* in-place (text placeholder + pixel data)."""
+        if self.config.render_mode != 'vision' or self.image_handler is None:
+            return
+        image, image_path = get_agent_view(
+            self.exploration_manager,
+            self.exploration_manager.agent.pos,
+            self.exploration_manager.agent.ori,
+            self.image_handler,
+            seed=self.current_seed,
+        )
+        mm = obs.get('multi_modal_input', {})
+        imgs = list(mm.get(self.config.image_placeholder, []))
+        imgs.append(image)
+        obs['multi_modal_input'] = {self.config.image_placeholder: imgs}
+        obs['obs_str'] += f'\n\nYour current view:\n{self.config.image_placeholder}'
+        if image_path:
+            self.observed_image_paths.append(image_path)
 
     # ------------------------------------------------------------------
     # step() dispatcher
@@ -277,17 +284,7 @@ class SpatialGym(GymImageEnv):
             )
             obs = {'obs_str': feedback + '\n' + self.prompter.get_format_footer(True)}
             # Re-attach the FOV image so agent can plan actions
-            if self.config.render_mode == 'vision' and self.image_handler is not None:
-                image, image_path = get_agent_view(
-                    self.exploration_manager,
-                    self.exploration_manager.agent.pos,
-                    self.exploration_manager.agent.ori,
-                    self.image_handler,
-                    seed=self.current_seed,
-                )
-                obs['multi_modal_input'] = {self.config.image_placeholder: [image]}
-                if image_path:
-                    self.observed_image_paths.append(image_path)
+            self._append_fov_image(obs)
             self.render_cache = obs
             return obs, 0.0, False, {'perception_passed': True, 'perception_score': overall}
 
@@ -299,16 +296,8 @@ class SpatialGym(GymImageEnv):
                 False, overall, self.config.perception_pass_threshold, n_visible, n_reported, self.perception_retries_left
             )
             obs = {'obs_str': feedback + '\n\n' + self.prompter.get_perception_prompt()}
-            # Re-show FOV image
-            if self.config.render_mode == 'vision' and self.image_handler is not None:
-                image, _ = get_agent_view(
-                    self.exploration_manager,
-                    self.exploration_manager.agent.pos,
-                    self.exploration_manager.agent.ori,
-                    self.image_handler,
-                    seed=self.current_seed,
-                )
-                obs['multi_modal_input'] = {self.config.image_placeholder: [image]}
+            # Re-show FOV image (placeholder + pixel data)
+            self._append_fov_image(obs)
             self.render_cache = obs
             return obs, 0.0, False, {'perception_passed': False, 'perception_score': overall, 'perception_retry': True}
 
@@ -331,15 +320,7 @@ class SpatialGym(GymImageEnv):
             obs_str = feedback + f"\n{self.prompter.steps_left_message(self.remaining_exp_steps)}"
             obs_str += '\n\n' + self.prompter.get_perception_prompt()
             obs = {'obs_str': obs_str}
-            if self.config.render_mode == 'vision' and self.image_handler is not None:
-                image, _ = get_agent_view(
-                    self.exploration_manager,
-                    self.exploration_manager.agent.pos,
-                    self.exploration_manager.agent.ori,
-                    self.image_handler,
-                    seed=self.current_seed,
-                )
-                obs['multi_modal_input'] = {self.config.image_placeholder: [image]}
+            self._append_fov_image(obs)
         else:
             self.phase = EnvPhase.EXPLORATION_ACTION
             obs = {'obs_str': self.prompter.steps_left_message(self.remaining_exp_steps) + '\n' + self.prompter.get_format_footer(True)}
@@ -385,15 +366,14 @@ class SpatialGym(GymImageEnv):
             self._last_action_had_observe = any('Observe' in str(a) for a in executed)
 
         if awaiting_cogmap:
-            # Transition to cogmap phase
             self.phase = EnvPhase.COGMAP
         elif not done and self._should_do_perception():
-            # Transition to perception phase for next turn
             self.phase = EnvPhase.EXPLORATION_PERCEPTION
             self.perception_retries_left = self.config.max_perception_retries
             self.best_perception_score = 0.0
-            # Append perception prompt to the observation
             obs['obs_str'] += '\n\n' + self.prompter.get_perception_prompt()
+        elif not done and not awaiting_cogmap:
+            obs['obs_str'] += '\n' + self.prompter.get_format_footer(True)
 
         self.render_cache = obs
         return obs, reward, done, info

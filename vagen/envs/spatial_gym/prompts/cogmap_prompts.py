@@ -23,7 +23,7 @@ Represent the scene as a JSON map.
 ### Example
 ```json
 {
-    "agent": {"position": [2, 3], "facing": "east"},
+    "agent": {"position": [0, 0], "facing": "north"},
     "chair": {"position": [2, 4], "facing": "north"},
     "sofa": {"position": [5, 1], "facing": "west"}
 }
@@ -36,25 +36,20 @@ LOCAL_PERCEPTION_PROMPT = """\
 Describe all objects and doors you currently see in your field of view.
 
 ### Schema
-- position: [x, y] integers relative to your current position
-- facing: object's front face direction "+x|-x|+y|-y"
-
-### Frame
-- Origin [0, 0] is your current position.
-- +y: your facing direction (forward)
-- +x: right, -x: left, -y: backward
+- position: [x, y] integers relative to your current position (north = forward, east = right)
+- facing: "north|northeast|east|southeast|south|southwest|west|northwest". Omit facing for objects without a meaningful front (e.g. vase, pillow).
 
 ### Rules
 - Include ALL visible objects and doors in your FOV.
-- Use local axes for facing (+x/-x/+y/-y), NOT compass directions.
+- North means the object faces the same direction as you (forward); east means it faces to your right; etc.
 
 ### Example
 ```json
 {
     "origin": "agent",
     "objects": {
-        "red chair": {"position": [1, 2], "facing": "-x"},
-        "door A": {"position": [-1, 3], "facing": "+x"}
+        "red chair": {"position": [1, 2], "facing": "northwest"},
+        "vase": {"position": [0, 3]}
     }
 }
 ```

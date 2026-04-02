@@ -1255,23 +1255,29 @@ class CognitiveMapManager:
         gate_names = {g.name for g in gt_room.gates}
         
         def _norm_face_local(f, anchor_ori):
-            """For local/room sections - convert relative directions (+x/-x/+y/-y)
-            to absolute cardinal (north/south/east/west) based on anchor orientation.
-
-            Uses the same rotation as transforms.rotation_matrix_from_ori (inverse)
-            to map local axes back to world axes, then snaps to nearest cardinal.
+            """Convert a local-frame compass facing (north=forward) to a
+            world-frame cardinal string (north/south/east/west).
             """
             if not isinstance(f, str):
                 return f
-            s = f.strip().lower()
-            local_vecs = {"+x": np.array([1, 0]), "-x": np.array([-1, 0]),
-                          "+y": np.array([0, 1]), "-y": np.array([0, -1])}
-            if s not in local_vecs:
-                return s
+            s = re.sub(r"[\s_-]+", "", f.strip().lower())
+            # Local compass → local vector (north = +y = forward, east = +x = right)
+            _compass_to_vec = {
+                "north": (0, 1), "n": (0, 1),
+                "northeast": (1, 1), "ne": (1, 1),
+                "east": (1, 0), "e": (1, 0),
+                "southeast": (1, -1), "se": (1, -1),
+                "south": (0, -1), "s": (0, -1),
+                "southwest": (-1, -1), "sw": (-1, -1),
+                "west": (-1, 0), "w": (-1, 0),
+                "northwest": (-1, 1), "nw": (-1, 1),
+            }
+            vec = _compass_to_vec.get(s)
+            if vec is None:
+                return f.strip().lower()
             from ..utils.cogmap.transforms import rotation_matrix_from_ori
             R = rotation_matrix_from_ori(np.asarray(anchor_ori, dtype=float))
-            # R maps world→local, so R.T maps local→world
-            world_vec = R.T @ local_vecs[s].astype(float)
+            world_vec = R.T @ np.array(vec, dtype=float)
             # Snap to nearest cardinal
             cardinals = {"north": np.array([0, 1]), "east": np.array([1, 0]),
                          "south": np.array([0, -1]), "west": np.array([-1, 0])}

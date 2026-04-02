@@ -354,30 +354,37 @@ def _simulate_navigation(
     init_pos: Tuple[float, float],
     init_ori: Tuple[int, int],
     object_positions: Dict[str, Tuple[float, float]],
+    object_rooms: Optional[Dict[str, Any]] = None,
+    init_room_id: Any = None,
 ) -> Tuple[Optional[Tuple[float, float]], Optional[Tuple[int, int]], Optional[str]]:
     """Simulate navigation actions and return final position, orientation, and any error."""
     pos = _coerce_point(init_pos)
     ori = _normalize_orientation(init_ori)
-    
+    agent_room_id = init_room_id
+
     for action_type, param in actions:
         if action_type == 'rotate':
             try:
                 ori = _rotate_orientation(ori, int(param))
             except ValueError:
                 return None, None, 'invalid_rotation'
-        
+
         elif action_type == 'jumpto':
             name = str(param).lower()
             target = object_positions.get(name)
             if target is None:
                 return None, None, 'unknown_object'
-            if not _is_visible_from(pos, ori, target):
+            target_room_id = object_rooms.get(name) if object_rooms else None
+            if not _is_visible_from(pos, ori, target,
+                                    agent_room_id=agent_room_id,
+                                    target_room_id=target_room_id):
                 return None, None, 'target_not_visible'
             pos = target
-        
+            agent_room_id = target_room_id
+
         else:
             return None, None, 'invalid_action'
-    
+
     return pos, ori, None
 
 
@@ -554,9 +561,14 @@ def _eval_backward_nav(
     init_pos = _coerce_point(answer['init_pos'])
     init_ori = _normalize_orientation(answer['init_ori'])
     object_positions = {str(k).lower(): _coerce_point(v) for k, v in answer['object_positions'].items()}
-    
+    object_rooms = {str(k).lower(): v for k, v in answer.get('object_rooms', {}).items()}
+    init_room_id = answer.get('init_room_id')
+
     # Simulate navigation
-    final_pos, final_ori, error = _simulate_navigation(pred_actions, init_pos, init_ori, object_positions)
+    final_pos, final_ori, error = _simulate_navigation(
+        pred_actions, init_pos, init_ori, object_positions,
+        object_rooms=object_rooms, init_room_id=init_room_id,
+    )
     if error:
         return False, {'error': error}
     
@@ -621,12 +633,20 @@ def _eval_backward_nav_rev(pred: str, answer: Union[str, Dict]) -> Tuple[bool, D
     start_ori = _normalize_orientation(answer['start_ori'])
     target_pos = _coerce_point(answer['target_pos'])  # Target is the initial position
     object_positions = {str(k).lower(): _coerce_point(v) for k, v in answer['object_positions'].items()}
+    object_rooms = {str(k).lower(): v for k, v in answer.get('object_rooms', {}).items()}
+    start_room_id = answer.get('start_room_id')
 
     # Add initial_pos to object_positions for visibility check
     object_positions['initial_pos'] = target_pos
+    target_room_id = answer.get('target_room_id')
+    if target_room_id is not None:
+        object_rooms['initial_pos'] = target_room_id
 
     # Simulate navigation without the final JumpTo(initial_pos)
-    final_pos, final_ori, error = _simulate_navigation(actions_without_final, start_pos, start_ori, object_positions)
+    final_pos, final_ori, error = _simulate_navigation(
+        actions_without_final, start_pos, start_ori, object_positions,
+        object_rooms=object_rooms, init_room_id=start_room_id,
+    )
     if error:
         return False, {'error': error}
 
@@ -634,7 +654,15 @@ def _eval_backward_nav_rev(pred: str, answer: Union[str, Dict]) -> Tuple[bool, D
     if final_pos is None or final_ori is None:
         return False, {'error': 'simulation_failed'}
 
-    is_visible = _is_visible_from(final_pos, final_ori, target_pos)
+    # Determine agent's room_id after simulation (last jumped-to object's room)
+    final_room_id = start_room_id
+    for at, ap in actions_without_final:
+        if at == 'jumpto':
+            final_room_id = object_rooms.get(str(ap).lower())
+
+    is_visible = _is_visible_from(final_pos, final_ori, target_pos,
+                                  agent_room_id=final_room_id,
+                                  target_room_id=target_room_id)
 
     best_info = {
         'initial_pos_visible': is_visible,

@@ -36,7 +36,7 @@ DIRECTION_EVAL_TEMPLATE = (
 )
 
 POV_EVAL_TEMPLATE = (
-    "Now you jump to {anchor_name}'s direction, facing its direction.\n"
+    "Now you jump to {anchor_name}'s position, facing its direction.\n"
     "Describe where {obj_name} is relative to you.\n"
     "Answer format: <ego direction>, <distance>\n"
     "Example: front-left, near\n"
