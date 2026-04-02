@@ -181,7 +181,10 @@ class GenericVisionInferenceWorkflow:
             messages.append(self.adapter.format_user_turn(user_text, user_imgs))
             user_imgs_per_turn.append(user_imgs)
 
-            for t in range(turn_limit):
+            exp_turns = 0
+            perception_turns = 0
+            eval_turns = 0
+            while True:
                 # Safeguard completion
                 try:
                     # In non-concat mode, only send system prompt + current user message
@@ -236,11 +239,21 @@ class GenericVisionInferenceWorkflow:
                 messages.append(self.adapter.format_user_turn(user_text, user_imgs))
                 user_imgs_per_turn.append(user_imgs)
 
+                # Categorize turn for counting
+                cat = step_info.get("turn_category", "exploration") if isinstance(step_info, dict) else "exploration"
+                if cat == "perception":
+                    perception_turns += 1
+                elif cat == "evaluation":
+                    eval_turns += 1
+                else:
+                    exp_turns += 1
+
                 if done:
                     terminated = True
                     finish_reason = "done"
                     break
-                if t + 1 >= turn_limit:
+                # Only exploration + evaluation turns count toward the limit
+                if (exp_turns + eval_turns) >= turn_limit:
                     finish_reason = "max_turns"
                     break
 
@@ -270,6 +283,9 @@ class GenericVisionInferenceWorkflow:
                 "cumulative_reward": float(cumulative_reward),
                 "rewards": rewards,
                 "num_turns": len(assistant_texts),
+                "exp_turns": exp_turns,
+                "perception_turns": perception_turns,
+                "eval_turns": eval_turns,
                 "infos": final_infos,
                 "env_config": env_config_dump,
             }
@@ -291,6 +307,9 @@ class GenericVisionInferenceWorkflow:
                 "rollout_id": rid,
                 "final_text": assistant_texts[-1] if assistant_texts else "",
                 "num_turns": len(assistant_texts),
+                "exp_turns": exp_turns,
+                "perception_turns": perception_turns,
+                "eval_turns": eval_turns,
                 "messages": messages,
                 "terminated": terminated,
                 "finish_reason": finish_reason,
@@ -321,6 +340,9 @@ class GenericVisionInferenceWorkflow:
                         "cumulative_reward": 0.0,
                         "rewards": [],
                         "num_turns": 0,
+                        "exp_turns": 0,
+                        "perception_turns": 0,
+                        "eval_turns": 0,
                         "infos": (infos or []) + [{"error": repr(e)}],
                         "env_config": env_config_dump,
                         "error_details": {
@@ -347,6 +369,9 @@ class GenericVisionInferenceWorkflow:
                 "rollout_id": f"ERR-{uuid.uuid4().hex[:8]}",
                 "final_text": "",
                 "num_turns": 0,
+                "exp_turns": 0,
+                "perception_turns": 0,
+                "eval_turns": 0,
                 "messages": [],
                 "terminated": False,
                 "finish_reason": "error",

@@ -101,6 +101,9 @@ def write_rollouts_summary(
     succ_cnt = 0
     sum_cum_reward = 0.0
     sum_turns = 0
+    sum_exp_turns = 0
+    sum_perception_turns = 0
+    sum_eval_turns = 0
     error_rollouts: List[str] = []
     per_tag_data: Dict[int, Dict[str, Any]] = {}
 
@@ -115,6 +118,9 @@ def write_rollouts_summary(
             "rollout_id": r.get("rollout_id"),
             "seed": r.get("seed"),
             "num_turns": int(r.get("num_turns") or 0),
+            "exp_turns": int(r.get("exp_turns") or 0),
+            "perception_turns": int(r.get("perception_turns") or 0),
+            "eval_turns": int(r.get("eval_turns") or 0),
             "terminated": bool(r.get("terminated") or False),
             "finish_reason": r.get("finish_reason"),
             "success": ep_success,
@@ -141,6 +147,9 @@ def write_rollouts_summary(
             succ_cnt += 1
         sum_cum_reward += ep["cumulative_reward"]
         sum_turns += ep["num_turns"]
+        sum_exp_turns += ep["exp_turns"]
+        sum_perception_turns += ep["perception_turns"]
+        sum_eval_turns += ep["eval_turns"]
 
         # Count errors (exclude normal endings like done/max_turns/skipped resumes)
         if ep["finish_reason"] not in ("done", "max_turns", "skipped_resume"):
@@ -157,6 +166,9 @@ def write_rollouts_summary(
                     "succ_cnt": 0,
                     "reward_sum": 0.0,
                     "turn_sum": 0,
+                    "exp_turn_sum": 0,
+                    "perception_turn_sum": 0,
+                    "eval_turn_sum": 0,
                     "error_rollouts": set(),
                 },
             )
@@ -165,6 +177,9 @@ def write_rollouts_summary(
                 tag_state["succ_cnt"] += 1
             tag_state["reward_sum"] += ep["cumulative_reward"]
             tag_state["turn_sum"] += ep["num_turns"]
+            tag_state["exp_turn_sum"] += ep["exp_turns"]
+            tag_state["perception_turn_sum"] += ep["perception_turns"]
+            tag_state["eval_turn_sum"] += ep["eval_turns"]
             if ep["finish_reason"] not in ("done", "max_turns", "skipped_resume"):
                 rid = ep.get("rollout_id")
                 if rid:
@@ -177,6 +192,9 @@ def write_rollouts_summary(
         "success_rate": (succ_cnt / n) if n else 0.0,
         "avg_cumulative_reward": (sum_cum_reward / n) if n else 0.0,
         "avg_turns": (sum_turns / n) if n else 0.0,
+        "avg_exp_turns": (sum_exp_turns / n) if n else 0.0,
+        "avg_perception_turns": (sum_perception_turns / n) if n else 0.0,
+        "avg_eval_turns": (sum_eval_turns / n) if n else 0.0,
         "error_rollouts": error_rollouts,
         "episodes": episodes,
     }
@@ -193,6 +211,9 @@ def write_rollouts_summary(
                 "success_rate": (state["succ_cnt"] / count) if count else 0.0,
                 "avg_cumulative_reward": (state["reward_sum"] / count) if count else 0.0,
                 "avg_turns": (state["turn_sum"] / count) if count else 0.0,
+                "avg_exp_turns": (state["exp_turn_sum"] / count) if count else 0.0,
+                "avg_perception_turns": (state["perception_turn_sum"] / count) if count else 0.0,
+                "avg_eval_turns": (state["eval_turn_sum"] / count) if count else 0.0,
                 "error_rollouts": sorted(state["error_rollouts"]),
                 "episodes": eps,
             }
@@ -226,6 +247,9 @@ def write_rollouts_summary_from_dump(
     succ_cnt = 0
     sum_cum_reward = 0.0
     sum_turns = 0
+    sum_exp_turns = 0
+    sum_perception_turns = 0
+    sum_eval_turns = 0
     error_rollouts: List[str] = []
     per_tag_data: Dict[int, Dict[str, Any]] = {}
 
@@ -253,6 +277,9 @@ def write_rollouts_summary_from_dump(
             "rollout_id": rollout_id,
             "seed": m.get("seed"),
             "num_turns": int(m.get("num_turns") or 0),
+            "exp_turns": int(m.get("exp_turns") or 0),
+            "perception_turns": int(m.get("perception_turns") or 0),
+            "eval_turns": int(m.get("eval_turns") or 0),
             "terminated": bool(m.get("terminated") or False),
             "finish_reason": m.get("finish_reason"),
             "success": ep_success,
@@ -282,6 +309,9 @@ def write_rollouts_summary_from_dump(
             succ_cnt += 1
         sum_cum_reward += ep["cumulative_reward"]
         sum_turns += ep["num_turns"]
+        sum_exp_turns += ep["exp_turns"]
+        sum_perception_turns += ep["perception_turns"]
+        sum_eval_turns += ep["eval_turns"]
 
         if ep["finish_reason"] not in ("done", "max_turns", "skipped_resume"):
             error_rollouts.append(rollout_id)
@@ -295,6 +325,9 @@ def write_rollouts_summary_from_dump(
                     "succ_cnt": 0,
                     "reward_sum": 0.0,
                     "turn_sum": 0,
+                    "exp_turn_sum": 0,
+                    "perception_turn_sum": 0,
+                    "eval_turn_sum": 0,
                     "error_rollouts": set(),
                 },
             )
@@ -303,6 +336,9 @@ def write_rollouts_summary_from_dump(
                 tag_state["succ_cnt"] += 1
             tag_state["reward_sum"] += ep["cumulative_reward"]
             tag_state["turn_sum"] += ep["num_turns"]
+            tag_state["exp_turn_sum"] += ep["exp_turns"]
+            tag_state["perception_turn_sum"] += ep["perception_turns"]
+            tag_state["eval_turn_sum"] += ep["eval_turns"]
             if ep["finish_reason"] not in ("done", "max_turns", "skipped_resume"):
                 tag_state["error_rollouts"].add(rollout_id)
 
@@ -313,6 +349,9 @@ def write_rollouts_summary_from_dump(
         "success_rate": (succ_cnt / n) if n else 0.0,
         "avg_cumulative_reward": (sum_cum_reward / n) if n else 0.0,
         "avg_turns": (sum_turns / n) if n else 0.0,
+        "avg_exp_turns": (sum_exp_turns / n) if n else 0.0,
+        "avg_perception_turns": (sum_perception_turns / n) if n else 0.0,
+        "avg_eval_turns": (sum_eval_turns / n) if n else 0.0,
         "error_rollouts": error_rollouts,
         "episodes": episodes,
     }
@@ -329,6 +368,9 @@ def write_rollouts_summary_from_dump(
                 "success_rate": (state["succ_cnt"] / count) if count else 0.0,
                 "avg_cumulative_reward": (state["reward_sum"] / count) if count else 0.0,
                 "avg_turns": (state["turn_sum"] / count) if count else 0.0,
+                "avg_exp_turns": (state["exp_turn_sum"] / count) if count else 0.0,
+                "avg_perception_turns": (state["perception_turn_sum"] / count) if count else 0.0,
+                "avg_eval_turns": (state["eval_turn_sum"] / count) if count else 0.0,
                 "error_rollouts": sorted(state["error_rollouts"]),
                 "episodes": eps,
             }

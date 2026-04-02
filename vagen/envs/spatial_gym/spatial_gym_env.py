@@ -232,23 +232,27 @@ class SpatialGym(GymImageEnv):
         is_perception = (self.phase == EnvPhase.EXPLORATION_PERCEPTION)
 
         if is_perception:
+            turn_category = "perception"
             result = self._handle_perception(action_str)
         elif self.phase == EnvPhase.EXPLORATION_ACTION:
+            turn_category = "exploration"
             self.effective_turns += 1
             result = self._handle_action(action_str)
         elif self.phase == EnvPhase.COGMAP:
+            turn_category = "exploration"  # cogmap is part of exploration flow
             self.effective_turns += 1
             result = self._handle_cogmap(action_str)
         elif self.phase == EnvPhase.EVAL_TASK:
+            turn_category = "evaluation"
             self.effective_turns += 1
             result = self._handle_eval_task(action_str)
         else:
             raise RuntimeError(f"step() called in unexpected phase: {self.phase}")
 
-        # Inject effective_turns into info so external loop can optionally use it
         obs, reward, done, info = result
         info['effective_turns'] = self.effective_turns
         info['is_validation_turn'] = is_perception
+        info['turn_category'] = turn_category
         return obs, reward, done, info
 
     # ------------------------------------------------------------------
@@ -282,7 +286,7 @@ class SpatialGym(GymImageEnv):
             feedback = self.prompter.get_perception_feedback(
                 True, overall, self.config.perception_pass_threshold, n_visible, n_reported, self.perception_retries_left
             )
-            obs = {'obs_str': feedback + '\n' + self.prompter.get_format_footer(True)}
+            obs = {'obs_str': feedback + '\n' + self.prompter.steps_left_message(self.remaining_exp_steps) + '\n' + self.prompter.get_format_footer(True)}
             # Re-attach the FOV image so agent can plan actions
             self._append_fov_image(obs)
             self.render_cache = obs
@@ -324,6 +328,7 @@ class SpatialGym(GymImageEnv):
         else:
             self.phase = EnvPhase.EXPLORATION_ACTION
             obs = {'obs_str': self.prompter.steps_left_message(self.remaining_exp_steps) + '\n' + self.prompter.get_format_footer(True)}
+            self._append_fov_image(obs)
 
         self.render_cache = obs
         return obs, reward, False, {'perception_passed': False, 'perception_score': overall, 'perception_exhausted': True}
