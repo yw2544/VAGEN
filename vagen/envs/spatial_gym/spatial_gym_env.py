@@ -305,33 +305,17 @@ class SpatialGym(GymImageEnv):
             self.render_cache = obs
             return obs, 0.0, False, {'perception_passed': False, 'perception_score': overall, 'perception_retry': True}
 
-        # All retries exhausted — consume 1 step, skip action
-        self.remaining_exp_steps -= 1
-        reward = -0.1 - self.config.perception_fail_penalty
+        # All retries exhausted — don't consume exploration step, just move on
+        # Clear the flag so the same observe() cannot re-trigger perception
+        self._last_action_had_observe = False
 
-        if self.remaining_exp_steps <= 0:
-            # Budget exhausted, go to cogmap
-            return self._enter_cogmap_phase(forced_term=True, extra_reward=reward)
-
-        # Stay in place, next turn. Check if perception should trigger again (same pos, same FOV)
-        if self._should_do_perception():
-            self.phase = EnvPhase.EXPLORATION_PERCEPTION
-            self.perception_retries_left = self.config.max_perception_retries
-            self.best_perception_score = 0.0
-            feedback = self.prompter.get_perception_feedback(
-                False, overall, self.config.perception_pass_threshold, n_visible, n_reported, 0
-            )
-            obs_str = feedback + f"\n{self.prompter.steps_left_message(self.remaining_exp_steps)}"
-            obs_str += '\n\n' + self.prompter.get_perception_prompt()
-            obs = {'obs_str': obs_str}
-            self._append_fov_image(obs)
-        else:
-            self.phase = EnvPhase.EXPLORATION_ACTION
-            obs = {'obs_str': self.prompter.steps_left_message(self.remaining_exp_steps) + '\n' + self.prompter.get_format_footer(True)}
-            self._append_fov_image(obs)
+        # Perception exhausted for this observe — go straight to action
+        self.phase = EnvPhase.EXPLORATION_ACTION
+        obs = {'obs_str': self.prompter.steps_left_message(self.remaining_exp_steps) + '\n' + self.prompter.get_format_footer(True)}
+        self._append_fov_image(obs)
 
         self.render_cache = obs
-        return obs, reward, False, {'perception_passed': False, 'perception_score': overall, 'perception_exhausted': True}
+        return obs, 0.0, False, {'perception_passed': False, 'perception_score': overall, 'perception_exhausted': True}
 
     def _handle_action(self, action_str: str):
         """Execute exploration action (existing logic, extracted from old step())."""

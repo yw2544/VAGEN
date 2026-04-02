@@ -184,6 +184,8 @@ class GenericVisionInferenceWorkflow:
             exp_turns = 0
             perception_turns = 0
             eval_turns = 0
+            perception_attempts = 0  # number of perception phases (one per observe)
+            perception_passes = 0
             while True:
                 # Safeguard completion
                 try:
@@ -243,6 +245,13 @@ class GenericVisionInferenceWorkflow:
                 cat = step_info.get("turn_category", "exploration") if isinstance(step_info, dict) else "exploration"
                 if cat == "perception":
                     perception_turns += 1
+                    # Track perception outcomes (pass or exhausted = one completed attempt)
+                    if isinstance(step_info, dict):
+                        if step_info.get("perception_passed"):
+                            perception_attempts += 1
+                            perception_passes += 1
+                        elif step_info.get("perception_exhausted"):
+                            perception_attempts += 1
                 elif cat == "evaluation":
                     eval_turns += 1
                 else:
@@ -286,6 +295,8 @@ class GenericVisionInferenceWorkflow:
                 "exp_turns": exp_turns,
                 "perception_turns": perception_turns,
                 "eval_turns": eval_turns,
+                "perception_attempts": perception_attempts,
+                "perception_passes": perception_passes,
                 "infos": final_infos,
                 "env_config": env_config_dump,
             }
@@ -310,6 +321,8 @@ class GenericVisionInferenceWorkflow:
                 "exp_turns": exp_turns,
                 "perception_turns": perception_turns,
                 "eval_turns": eval_turns,
+                "perception_attempts": perception_attempts,
+                "perception_passes": perception_passes,
                 "messages": messages,
                 "terminated": terminated,
                 "finish_reason": finish_reason,

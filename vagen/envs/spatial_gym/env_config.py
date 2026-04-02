@@ -55,7 +55,7 @@ class SpatialGymConfig:
     # Perception validation (local cogmap gate before each action)
     require_perception: bool = False
     perception_pass_threshold: float = 0.5
-    max_perception_retries: int = 4
+    max_perception_retries: int = 2  # total attempts = max_perception_retries + 1
     perception_fail_penalty: float = 0.3
 
     # Eval tasks after exploration

@@ -104,6 +104,8 @@ def write_rollouts_summary(
     sum_exp_turns = 0
     sum_perception_turns = 0
     sum_eval_turns = 0
+    sum_perception_attempts = 0
+    sum_perception_passes = 0
     error_rollouts: List[str] = []
     per_tag_data: Dict[int, Dict[str, Any]] = {}
 
@@ -121,6 +123,8 @@ def write_rollouts_summary(
             "exp_turns": int(r.get("exp_turns") or 0),
             "perception_turns": int(r.get("perception_turns") or 0),
             "eval_turns": int(r.get("eval_turns") or 0),
+            "perception_attempts": int(r.get("perception_attempts") or 0),
+            "perception_passes": int(r.get("perception_passes") or 0),
             "terminated": bool(r.get("terminated") or False),
             "finish_reason": r.get("finish_reason"),
             "success": ep_success,
@@ -150,6 +154,8 @@ def write_rollouts_summary(
         sum_exp_turns += ep["exp_turns"]
         sum_perception_turns += ep["perception_turns"]
         sum_eval_turns += ep["eval_turns"]
+        sum_perception_attempts += ep["perception_attempts"]
+        sum_perception_passes += ep["perception_passes"]
 
         # Count errors (exclude normal endings like done/max_turns/skipped resumes)
         if ep["finish_reason"] not in ("done", "max_turns", "skipped_resume"):
@@ -169,6 +175,8 @@ def write_rollouts_summary(
                     "exp_turn_sum": 0,
                     "perception_turn_sum": 0,
                     "eval_turn_sum": 0,
+                    "perception_attempt_sum": 0,
+                    "perception_pass_sum": 0,
                     "error_rollouts": set(),
                 },
             )
@@ -180,6 +188,8 @@ def write_rollouts_summary(
             tag_state["exp_turn_sum"] += ep["exp_turns"]
             tag_state["perception_turn_sum"] += ep["perception_turns"]
             tag_state["eval_turn_sum"] += ep["eval_turns"]
+            tag_state["perception_attempt_sum"] += ep["perception_attempts"]
+            tag_state["perception_pass_sum"] += ep["perception_passes"]
             if ep["finish_reason"] not in ("done", "max_turns", "skipped_resume"):
                 rid = ep.get("rollout_id")
                 if rid:
@@ -195,6 +205,7 @@ def write_rollouts_summary(
         "avg_exp_turns": (sum_exp_turns / n) if n else 0.0,
         "avg_perception_turns": (sum_perception_turns / n) if n else 0.0,
         "avg_eval_turns": (sum_eval_turns / n) if n else 0.0,
+        "avg_perception_pass_rate": (sum_perception_passes / sum_perception_attempts) if sum_perception_attempts else 0.0,
         "error_rollouts": error_rollouts,
         "episodes": episodes,
     }
@@ -214,6 +225,7 @@ def write_rollouts_summary(
                 "avg_exp_turns": (state["exp_turn_sum"] / count) if count else 0.0,
                 "avg_perception_turns": (state["perception_turn_sum"] / count) if count else 0.0,
                 "avg_eval_turns": (state["eval_turn_sum"] / count) if count else 0.0,
+                "avg_perception_pass_rate": (state["perception_pass_sum"] / state["perception_attempt_sum"]) if state["perception_attempt_sum"] else 0.0,
                 "error_rollouts": sorted(state["error_rollouts"]),
                 "episodes": eps,
             }
@@ -250,6 +262,8 @@ def write_rollouts_summary_from_dump(
     sum_exp_turns = 0
     sum_perception_turns = 0
     sum_eval_turns = 0
+    sum_perception_attempts = 0
+    sum_perception_passes = 0
     error_rollouts: List[str] = []
     per_tag_data: Dict[int, Dict[str, Any]] = {}
 
@@ -312,6 +326,8 @@ def write_rollouts_summary_from_dump(
         sum_exp_turns += ep["exp_turns"]
         sum_perception_turns += ep["perception_turns"]
         sum_eval_turns += ep["eval_turns"]
+        sum_perception_attempts += ep["perception_attempts"]
+        sum_perception_passes += ep["perception_passes"]
 
         if ep["finish_reason"] not in ("done", "max_turns", "skipped_resume"):
             error_rollouts.append(rollout_id)
@@ -328,6 +344,8 @@ def write_rollouts_summary_from_dump(
                     "exp_turn_sum": 0,
                     "perception_turn_sum": 0,
                     "eval_turn_sum": 0,
+                    "perception_attempt_sum": 0,
+                    "perception_pass_sum": 0,
                     "error_rollouts": set(),
                 },
             )
@@ -339,6 +357,8 @@ def write_rollouts_summary_from_dump(
             tag_state["exp_turn_sum"] += ep["exp_turns"]
             tag_state["perception_turn_sum"] += ep["perception_turns"]
             tag_state["eval_turn_sum"] += ep["eval_turns"]
+            tag_state["perception_attempt_sum"] += ep["perception_attempts"]
+            tag_state["perception_pass_sum"] += ep["perception_passes"]
             if ep["finish_reason"] not in ("done", "max_turns", "skipped_resume"):
                 tag_state["error_rollouts"].add(rollout_id)
 
@@ -352,6 +372,7 @@ def write_rollouts_summary_from_dump(
         "avg_exp_turns": (sum_exp_turns / n) if n else 0.0,
         "avg_perception_turns": (sum_perception_turns / n) if n else 0.0,
         "avg_eval_turns": (sum_eval_turns / n) if n else 0.0,
+        "avg_perception_pass_rate": (sum_perception_passes / sum_perception_attempts) if sum_perception_attempts else 0.0,
         "error_rollouts": error_rollouts,
         "episodes": episodes,
     }
@@ -371,6 +392,7 @@ def write_rollouts_summary_from_dump(
                 "avg_exp_turns": (state["exp_turn_sum"] / count) if count else 0.0,
                 "avg_perception_turns": (state["perception_turn_sum"] / count) if count else 0.0,
                 "avg_eval_turns": (state["eval_turn_sum"] / count) if count else 0.0,
+                "avg_perception_pass_rate": (state["perception_pass_sum"] / state["perception_attempt_sum"]) if state["perception_attempt_sum"] else 0.0,
                 "error_rollouts": sorted(state["error_rollouts"]),
                 "episodes": eps,
             }
