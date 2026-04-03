@@ -50,6 +50,27 @@ class ImageHandler:
         tmp.update({k.replace('_', ' '): v for k, v in tmp.items()})
         tmp['agent'] = 'agent'
         self.name_2_cam_id = tmp
+        self.loc_task_poses = self._parse_loc_task_poses()
+
+    def _parse_loc_task_poses(self):
+        """Return list of (grid_x, grid_z, direction_str) for bwd_loc task cameras."""
+        _ROT_Y_TO_DIR = {0.0: 'north', 90.0: 'east', 180.0: 'south', 270.0: 'west'}
+        offset = self.json_data.get('offset', [0, 0])
+        poses = []
+        for cam in self.json_data.get('cameras', []):
+            cid = str(cam.get('id', ''))
+            if not cid.startswith('task_'):
+                continue
+            tg = cam.get('task_group', '') or cam.get('task_type', '')
+            if 'bwd_loc' not in tg:
+                continue
+            pos = cam.get('position', {})
+            rot_y = float(cam.get('rotation', {}).get('y', 0))
+            gx = int(round(pos['x'] + offset[0]))
+            gz = int(round(pos['z'] + offset[1]))
+            direction = _ROT_Y_TO_DIR.get(rot_y % 360, 'north')
+            poses.append((gx, gz, direction))
+        return poses
     
     @staticmethod
     def load_data(base_dir: str, seed: int) -> tuple:
@@ -68,19 +89,23 @@ class ImageHandler:
         image_path_map = {}
         
         # Construct mapping directly from available files in image_dir.
-        # This supports both legacy 4-dir and new 8-dir datasets.
-        cam_ids = list(self.objects.keys()) + ['agent']
-        
-        for cam_id in cam_ids:
-            prefix = f"{cam_id}_facing_"
-            for fname in os.listdir(self.image_dir):
-                if not (fname.startswith(prefix) and fname.endswith(".png")):
-                    continue
-                key = fname[:-4]
-                path = os.path.join(self.image_dir, fname)
-                image_path_map[key] = path
-                if self.preload_images:
-                    image_map[key] = Image.open(path).resize(self.image_size, Image.LANCZOS)
+        # This supports both legacy 4-dir and new 8-dir datasets, as well as
+        # position-based images (e.g. "1_4_facing_east.png") used by localization tasks.
+        # cam_ids may contain integers (object_id) or strings; normalise to strings
+        cam_ids_str = {str(c) for c in self.objects.keys()} | {'agent'}
+
+        for fname in os.listdir(self.image_dir):
+            if not (fname.endswith(".png") and "_facing_" in fname):
+                continue
+            key = fname[:-4]
+            prefix = key.rsplit("_facing_", 1)[0]
+            # Accept named-object cameras and position-based (digit_digit) cameras
+            if prefix not in cam_ids_str and not re.match(r'^\d+_\d+$', prefix):
+                continue
+            path = os.path.join(self.image_dir, fname)
+            image_path_map[key] = path
+            if self.preload_images:
+                image_map[key] = Image.open(path).resize(self.image_size, Image.LANCZOS)
         
         instruction_path = os.path.join(self.base_dir, 'instruction.png')
         assert os.path.exists(instruction_path)
@@ -155,9 +180,12 @@ class ImageHandler:
         # Handle special static images that don't need direction
         if name in ['instruction', 'label']:
             key = name
+        elif isinstance(name, tuple):
+            # Grid coordinate lookup (e.g. arbitrary localization positions)
+            key = f"{int(name[0])}_{int(name[1])}_facing_{self._normalize_direction(direction)}"
         else:
             key = f"{self.name_2_cam_id[name]}_facing_{self._normalize_direction(direction)}"
-        
+
         if key not in self._image_map:
             raise KeyError(f"Image not found for name '{name}' facing '{direction}'")
         

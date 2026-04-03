@@ -464,22 +464,23 @@ class AgentLoopWorkerBase:
                 # Handle multi-modal inputs and position_ids calculation
                 # Only support Qwen2VLImageProcessor for multi-modal processing currently
                 # TODO: support other multi-modal inputs
-                multi_modal_inputs = None
+                multi_modal_inputs = output.extra_fields.get("multi_modal_inputs")
                 if (
                     self.processor is not None
                     and "Qwen2VLImageProcessor" in self.processor.image_processor.__class__.__name__
                 ):
                     from verl.models.transformers.qwen2_vl import get_rope_index
 
-                    images = getattr(output, "multi_modal_data", {}).get("image", None)
-                    current_text = self.tokenizer.decode(input_ids.squeeze(0), skip_special_tokens=True)
-                    multi_modal_inputs = self.processor(text=[current_text], images=images, return_tensors="pt")
-                    multi_modal_inputs.pop("input_ids", None)
-                    multi_modal_inputs.pop("attention_mask", None)
+                    if multi_modal_inputs is None:
+                        images = getattr(output, "multi_modal_data", {}).get("image", None)
+                        current_text = self.tokenizer.decode(input_ids.squeeze(0), skip_special_tokens=True)
+                        multi_modal_inputs = self.processor(text=[current_text], images=images, return_tensors="pt")
+                        multi_modal_inputs.pop("input_ids", None)
+                        multi_modal_inputs.pop("attention_mask", None)
 
-                    # We must use dict(multi_modal_inputs) to convert BatchFeature values to a new dict
-                    # because np.array() only keeps the keys for BatchFeature.
-                    multi_modal_inputs = dict(multi_modal_inputs)
+                        # We must use dict(multi_modal_inputs) to convert BatchFeature values to a new dict
+                        # because np.array() only keeps the keys for BatchFeature.
+                        multi_modal_inputs = dict(multi_modal_inputs)
 
                     image_grid_thw = multi_modal_inputs.get("image_grid_thw")
                     video_grid_thw = multi_modal_inputs.get("video_grid_thw")

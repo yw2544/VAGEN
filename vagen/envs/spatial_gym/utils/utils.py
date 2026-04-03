@@ -107,9 +107,9 @@ def get_agent_view(exploration_manager, pos: np.ndarray, ori: np.ndarray, image_
             if np.allclose(obj.pos, pos):
                 position_name = obj.name
                 break
-    assert position_name is not None, (
-        f"Agent position not found for {pos}, sample id: {seed}"
-    )
+    if position_name is None:
+        # Arbitrary grid position (e.g. localization eval tasks); look up by coordinates
+        position_name = (int(round(pos[0])), int(round(pos[1])))
     direction = BaseAction._ori_to_direction_label(ori)
     return image_handler.get_image(position_name, direction), image_handler.get_image_path(position_name, direction)
 

@@ -71,16 +71,33 @@ class BaseLocEvaluationTask(BaseEvaluationTask):
 
     def _pick_best_pose_and_obs(self) -> Tuple[np.ndarray, np.ndarray, int, List[Dict], Dict]:
         """Sample poses and pick best based on visibility."""
+        _DIR_TO_ORI = {
+            'north': (0, 1), 'northeast': (1, 1), 'east': (1, 0), 'southeast': (1, -1),
+            'south': (0, -1), 'southwest': (-1, -1), 'west': (-1, 0), 'northwest': (-1, 1),
+        }
+        available_poses = self.config.get('available_poses', None)
+
         def pose_generator():
-            for _ in range(20):
-                rid = self._pick_room()
-                xmin, xmax, ymin, ymax = self.room.get_boundary(room_id=rid)
-                for _ in range(10):
-                    x, y = self.np_random.integers(xmin, xmax + 1), self.np_random.integers(ymin, ymax + 1)
-                    if not self.room.get_cell_info(x, y)['object_name']:
-                        ori = _ALL_8_ORIS[self.np_random.integers(0, 8)]
-                        yield (np.array([x, y]), np.array(ori), int(rid))
-                        break
+            if available_poses:
+                # Use only pre-rendered positions from the image handler
+                idxs = list(range(len(available_poses)))
+                self.np_random.shuffle(idxs)
+                for i in idxs:
+                    gx, gz, dir_name = available_poses[i]
+                    cell = self.room.get_cell_info(int(gx), int(gz))
+                    rid = cell.get('room_id') or 1
+                    ori = np.array(_DIR_TO_ORI.get(dir_name, (0, 1)), dtype=float)
+                    yield (np.array([gx, gz]), ori, int(rid))
+            else:
+                for _ in range(20):
+                    rid = self._pick_room()
+                    xmin, xmax, ymin, ymax = self.room.get_boundary(room_id=rid)
+                    for _ in range(10):
+                        x, y = self.np_random.integers(xmin, xmax + 1), self.np_random.integers(ymin, ymax + 1)
+                        if not self.room.get_cell_info(x, y)['object_name']:
+                            ori = _ALL_8_ORIS[self.np_random.integers(0, 8)]
+                            yield (np.array([x, y]), np.array(ori), int(rid))
+                            break
 
         def make_agent(cand):
              tmp = self.agent.copy()

@@ -11,9 +11,12 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from PIL import Image
+import torch
+from transformers import AutoProcessor
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, register
 from verl.utils.profiler import simple_timer
 from verl.utils.rollout_trace import rollout_trace_op
+from verl.utils.fs import copy_to_local
 from ..envs.gym_image_env import GymImageEnv
 from omegaconf import OmegaConf
 import traceback
@@ -84,6 +87,7 @@ class AgentData:
         self.response_ids: List[int] = []
         self.response_mask: List[int] = []
         self.response_logprobs: List[float] = []
+        self.multi_modal_inputs: Dict[str, Any] = {}
 
         # Env stats
         self.env_rewards: List[float] = []
@@ -109,6 +113,50 @@ def _normalize_images(imgs: List[Image.Image]) -> List[Image.Image]:
             continue
         out.append(im.convert("RGB") if isinstance(im, Image.Image) else im)
     return out
+
+
+def _extract_multi_modal_inputs(model_inputs: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep processor outputs needed for model forward, excluding token ids and masks."""
+    multi_modal_inputs = dict(model_inputs)
+    multi_modal_inputs.pop("input_ids", None)
+    multi_modal_inputs.pop("attention_mask", None)
+    return multi_modal_inputs
+
+
+def _merge_multi_modal_inputs(existing: Dict[str, Any], new_inputs: Dict[str, Any]) -> Dict[str, Any]:
+    """Append per-image processor outputs in prompt order across turns."""
+    if not existing:
+        return dict(new_inputs)
+    if not new_inputs:
+        return existing
+
+    merged = dict(existing)
+    for key, value in new_inputs.items():
+        if key not in merged:
+            merged[key] = value
+            continue
+        if torch.is_tensor(merged[key]) and torch.is_tensor(value):
+            merged[key] = torch.cat([merged[key], value], dim=0)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _set_processor_dependent_state(cls, tokenizer, processor) -> None:
+    """Refresh class state derived from the active multimodal processor."""
+    cls.processor = processor
+    cls.forbidden_response_token_ids = _get_forbidden_vision_token_ids(tokenizer, processor)
+
+    placeholder = [{"role": "system", "content": "placeholder"}]
+    if processor is not None:
+        prefix_text = processor.apply_chat_template(
+            placeholder, add_generation_prompt=False, tokenize=False, **cls.apply_chat_template_kwargs
+        )
+        cls.system_prompt_prefix = processor(text=[prefix_text], return_tensors="pt")["input_ids"].squeeze(0).tolist()
+    else:
+        cls.system_prompt_prefix = tokenizer.apply_chat_template(
+            placeholder, add_generation_prompt=False, tokenize=True, return_dict=False, **cls.apply_chat_template_kwargs
+        )
 
 
 def _get_forbidden_vision_token_ids(tokenizer, processor) -> set[int]:
@@ -224,18 +272,37 @@ class GymAgentLoop(AgentLoopBase):
         cls.apply_chat_template_kwargs = config.data.get("apply_chat_template_kwargs", {})
         cls.prompt_length = config.actor_rollout_ref.rollout.prompt_length
         cls.response_length = config.actor_rollout_ref.rollout.response_length
-        cls.forbidden_response_token_ids = _get_forbidden_vision_token_ids(tokenizer, processor)
+        _set_processor_dependent_state(cls, tokenizer, processor)
 
-        _placeholder = [{"role": "system", "content": "placeholder"}]
-        if processor is not None:
-            _prefix_text = processor.apply_chat_template(
-                _placeholder, add_generation_prompt=False, tokenize=False, **cls.apply_chat_template_kwargs
-            )
-            cls.system_prompt_prefix = processor(text=[_prefix_text], return_tensors="pt")["input_ids"].squeeze(0).tolist()
-        else:
-            cls.system_prompt_prefix = tokenizer.apply_chat_template(
-                _placeholder, add_generation_prompt=False, tokenize=True, return_dict=False, **cls.apply_chat_template_kwargs
-            )
+    def _ensure_processor(self):
+        """Load the multimodal processor on demand for image-based environments."""
+        if self.processor is not None:
+            return self.processor
+
+        model_path = self.config.actor_rollout_ref.model.path
+        local_path = copy_to_local(model_path)
+        last_error = None
+        for use_fast in (True, False):
+            try:
+                processor = AutoProcessor.from_pretrained(local_path, trust_remote_code=True, use_fast=use_fast)
+                if "Processor" not in processor.__class__.__name__:
+                    raise TypeError(f"Loaded object is not a processor: {type(processor).__name__}")
+                self.processor = processor
+                _set_processor_dependent_state(type(self), self.tokenizer, processor)
+                logger.warning(
+                    "Lazily loaded processor %s for model %s after worker initialization returned None",
+                    type(processor).__name__,
+                    model_path,
+                )
+                return processor
+            except Exception as exc:
+                last_error = exc
+
+        raise RuntimeError(
+            f"Failed to load multimodal processor for model {model_path}. "
+            f"Image-based environment requires a processor, but worker initialization provided None. "
+            f"Last retry error: {type(last_error).__name__}: {last_error}"
+        ) from last_error
 
     @rollout_trace_op
     async def run(self, sampling_params: Dict[str, Any], **kwargs) -> AgentLoopOutput:
@@ -334,6 +401,7 @@ class GymAgentLoop(AgentLoopBase):
             metrics=agent_data.metrics,
             extra_fields={
                 "image_data": agent_data.image_data,
+                "multi_modal_inputs": agent_data.multi_modal_inputs,
                 "reward_extra_info": {
                     "traj_success": float(agent_data.traj_success),
                     "graph_states": json.dumps(list(agent_data.graph_states)),
@@ -356,18 +424,20 @@ class GymAgentLoop(AgentLoopBase):
 
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: Dict[str, Any]) -> AgentState:
         """Encode initial (system + first user) messages into prompt_ids."""
-        if self.processor is not None:
+        processor = self.processor if self.processor is not None or not agent_data.image_data else self._ensure_processor()
+        if processor is not None:
             raw_prompt = await self.loop.run_in_executor(
                 None,
-                lambda: self.processor.apply_chat_template(
+                lambda: processor.apply_chat_template(
                     agent_data.messages,
                     add_generation_prompt=True,
                     tokenize=False,
                     **self.apply_chat_template_kwargs,
                 ),
             )
-            model_inputs = self.processor(text=[raw_prompt], images=agent_data.image_data or None, return_tensors="pt")
+            model_inputs = processor(text=[raw_prompt], images=agent_data.image_data or None, return_tensors="pt")
             agent_data.prompt_ids = model_inputs.pop("input_ids").squeeze(0).tolist()
+            agent_data.multi_modal_inputs = _extract_multi_modal_inputs(model_inputs)
         else:
             if agent_data.image_data:
                 raise ValueError("Environment returned images but `processor` is None.")
@@ -491,18 +561,23 @@ class GymAgentLoop(AgentLoopBase):
         new_images = _normalize_images(new_images)
 
         _placeholder = {"role": "system", "content": "placeholder"}
-        if self.processor is not None:
+        processor = self.processor if self.processor is not None or not new_images else self._ensure_processor()
+        if processor is not None:
             raw_user_suffix = await self.loop.run_in_executor(
                 None,
-                lambda: self.processor.apply_chat_template(
+                lambda: processor.apply_chat_template(
                     [_placeholder, user_msg],
                     add_generation_prompt=True,
                     tokenize=False,
                     **self.apply_chat_template_kwargs,
                 ),
             )
-            model_inputs = self.processor(text=[raw_user_suffix], images=new_images or None, return_tensors="pt")
+            model_inputs = processor(text=[raw_user_suffix], images=new_images or None, return_tensors="pt")
             response_ids = model_inputs.pop("input_ids").squeeze(0).tolist()
+            agent_data.multi_modal_inputs = _merge_multi_modal_inputs(
+                agent_data.multi_modal_inputs,
+                _extract_multi_modal_inputs(model_inputs),
+            )
         else:
             if new_images:
                 raise ValueError("Environment returned images but `processor` is None.")

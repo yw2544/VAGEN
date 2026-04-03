@@ -20,6 +20,7 @@ import importlib
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 from .gym_agent_loop import (
+    _extract_multi_modal_inputs,
     _flatten_text_only_content,
     _get_forbidden_vision_token_ids,
     _normalize_images,
@@ -69,6 +70,7 @@ class AgentData:
         self.turn_response_ids: Optional[List[int]] = None
         self.turn_response_mask: Optional[List[int]] = None
         self.turn_response_logprobs: Optional[List[int]] = None
+        self.turn_multi_modal_inputs: Dict[str, Any] = {}
 
         # Env stats
         self.env_turns: int = 0
@@ -185,6 +187,7 @@ class GymAgentLoop(AgentLoopBase):
             )
             model_inputs = self.processor(text=[raw_prompt], images=image_data, return_tensors="pt")
             agent_data.turn_prompt_ids = model_inputs.pop("input_ids").squeeze(0).tolist()
+            agent_data.turn_multi_modal_inputs = _extract_multi_modal_inputs(model_inputs)
         else:
             if image_data:
                 raise ValueError("Environment returned images but `processor` is None.")
@@ -344,6 +347,7 @@ class GymAgentLoop(AgentLoopBase):
             metrics=agent_data.metrics,
             extra_fields={"reward_extra_info": reward_extra,
                 "image_data": turn_images,
+                "multi_modal_inputs": agent_data.turn_multi_modal_inputs,
                 "last_turn": last_turn,
                 "group_idx": agent_data.group_idx,
                 "traj_idx": agent_data.traj_idx,

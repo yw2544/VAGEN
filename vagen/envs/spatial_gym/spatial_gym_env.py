@@ -429,10 +429,11 @@ class SpatialGym(GymImageEnv):
 
         total_reward = self._cogmap_reward + eval_reward
         # Build per-task score dict: eval_dir, eval_rot, etc.
+        # Always emit all keys (0.0 default) so every rollout has identical key sets.
         eval_per_task = {}
         for i, task_config in enumerate(self.config.eval_tasks):
-            if i < len(self.eval_task_scores):
-                eval_per_task[f"eval_{task_config['task_type']}"] = self.eval_task_scores[i]
+            score = self.eval_task_scores[i] if i < len(self.eval_task_scores) else 0.0
+            eval_per_task[f"eval_{task_config['task_type']}"] = score
         info = {
             **self._cogmap_info,
             'eval_task_scores': self.eval_task_scores,
@@ -465,7 +466,10 @@ class SpatialGym(GymImageEnv):
         self.eval_task_queue = []
         for task_config in self.config.eval_tasks:
             task_type = task_config['task_type']
-            task_kwargs = task_config.get('task_kwargs', {}) or {}
+            task_kwargs = dict(task_config.get('task_kwargs', {}) or {})
+            # Inject pre-rendered poses for vision localization task
+            if task_type == 'bwd_loc_vision' and self.image_handler is not None:
+                task_kwargs.setdefault('available_poses', self.image_handler.loc_task_poses)
             try:
                 task = EvalTaskType.create_task(
                     task_type, self.np_random,
