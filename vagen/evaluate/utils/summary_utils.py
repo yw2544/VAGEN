@@ -294,6 +294,8 @@ def write_rollouts_summary_from_dump(
             "exp_turns": int(m.get("exp_turns") or 0),
             "perception_turns": int(m.get("perception_turns") or 0),
             "eval_turns": int(m.get("eval_turns") or 0),
+            "perception_attempts": int(m.get("perception_attempts") or 0),
+            "perception_passes": int(m.get("perception_passes") or 0),
             "terminated": bool(m.get("terminated") or False),
             "finish_reason": m.get("finish_reason"),
             "success": ep_success,
