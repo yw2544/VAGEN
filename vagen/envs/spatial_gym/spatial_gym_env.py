@@ -275,17 +275,10 @@ class SpatialGym(GymImageEnv):
         self.best_perception_score = max(self.best_perception_score, overall)
         passed = overall >= self.config.perception_pass_threshold
 
-        # Count how many objects the agent reported vs ground truth visible
-        n_visible = len(self._last_visible_objects)
-        # Estimate reported count from the JSON
-        n_reported = self._count_reported_objects(cogmap_str)
-
         if passed:
             # Proceed to action turn
             self.phase = EnvPhase.EXPLORATION_ACTION
-            feedback = self.prompter.get_perception_feedback(
-                True, overall, self.config.perception_pass_threshold, n_visible, n_reported, self.perception_retries_left
-            )
+            feedback = self.prompter.get_perception_feedback(True, self.perception_retries_left)
             obs = {'obs_str': feedback + '\n' + self.prompter.steps_left_message(self.remaining_exp_steps) + '\n' + self.prompter.get_format_footer(True)}
             # Re-attach the FOV image so agent can plan actions
             self._append_fov_image(obs)
@@ -296,9 +289,7 @@ class SpatialGym(GymImageEnv):
         self.perception_retries_left -= 1
         if self.perception_retries_left >= 0:
             # Retry with same FOV
-            feedback = self.prompter.get_perception_feedback(
-                False, overall, self.config.perception_pass_threshold, n_visible, n_reported, self.perception_retries_left
-            )
+            feedback = self.prompter.get_perception_feedback(False, self.perception_retries_left)
             obs = {'obs_str': feedback + '\n\n' + self.prompter.get_perception_prompt()}
             # Re-show FOV image (placeholder + pixel data)
             self._append_fov_image(obs)
@@ -349,8 +340,6 @@ class SpatialGym(GymImageEnv):
         self._last_visible_objects = []
         if exp_log and not awaiting_cogmap:
             self._last_visible_objects = list(exp_log.visible_objects or [])
-            self._last_action_had_observe = len(self._last_visible_objects) > 0 or bool(exp_log.visible_objects is not None)
-            # More precise: check if an observe action was in the executed actions
             executed = info.get('action_executed', [])
             self._last_action_had_observe = any('Observe' in str(a) for a in executed)
 

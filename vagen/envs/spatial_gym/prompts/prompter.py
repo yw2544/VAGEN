@@ -246,18 +246,19 @@ class PromptManager:
             prompt += f"\nStrictly follow this format:\n{ANSWER_LABEL}\n[JSON local perception only]"
         return prompt
 
-    def get_perception_feedback(self, passed: bool, score: float, threshold: float,
-                                n_visible: int, n_reported: int, retries_left: int) -> str:
+    def get_perception_feedback(self, passed: bool, retries_left: int) -> str:
         """Feedback after a perception attempt."""
         if passed:
             return "Perception accepted. Now choose your next action."
-        msg = f"Perception inaccurate (score: {score:.2f}, need ≥ {threshold:.2f})."
-        if n_visible > 0:
-            msg += f" You reported {n_reported} of {n_visible} visible objects."
+        msg = "Perception inaccurate."
         if retries_left > 0:
-            msg += f" Please try again. [Retry {self.config.max_perception_retries - retries_left + 1}/{self.config.max_perception_retries}]"
+            msg += (
+                f" Please try again — carefully refer to the instruction images above"
+                f" for object appearances and facing conventions."
+                f" [Retry {self.config.max_perception_retries - retries_left + 1}/{self.config.max_perception_retries}]"
+            )
         else:
-            msg += " No retries remaining. Skipping action this turn."
+            msg += " No retries remaining."
         return msg
 
     def get_eval_task_prompt(self, question: str) -> str:
