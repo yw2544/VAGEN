@@ -20,8 +20,10 @@ import importlib
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 from .gym_agent_loop import (
+    _build_reward_extra_info,
     _extract_multi_modal_inputs,
     _flatten_text_only_content,
+    _get_expected_eval_metric_keys,
     _get_forbidden_vision_token_ids,
     _normalize_images,
     _strip_forbidden_vision_tokens,
@@ -81,6 +83,7 @@ class AgentData:
         # Cached assistant text to step env
         self.last_assistant_text: Optional[str] = None
         self.outputs: List[AgentLoopOutput] = []
+        self.eval_metric_keys: List[str] = []
 
 # -------------------- Gym Agent Loop --------------------
 
@@ -154,6 +157,7 @@ class GymAgentLoop(AgentLoopBase):
             group_idx=kwargs["group_idx"],
             traj_idx=kwargs["traj_idx"],
         )
+        agent_data.eval_metric_keys = _get_expected_eval_metric_keys(env_config)
 
         # State machine: always GENERATE -> INTERACT, and decide termination inside INTERACT
         state = AgentState.PENDING
@@ -302,37 +306,15 @@ class GymAgentLoop(AgentLoopBase):
         prompt_ids = agent_data.turn_prompt_ids[: len(agent_data.turn_prompt_ids) - resp_len]
         multi_modal_data = {"image": turn_images} if turn_images else {}
 
-        # Build reward_extra_info with metric components
-        # All turns must have the same keys (agent_loop_no_concat uses first output's keys).
-        # Non-last turns use defaults; last turn fills in actual values.
-        if last_turn:
-            reward_extra = {
-                "traj_success": float(traj_success),
-                "step_penalty": agent_data.total_step_penalty,
-                "invalid_penalty": agent_data.total_invalid_penalty,
-                "cogmap_reward": float(info.get("cogmap_score", 0.0)) * 10.0,
-                "cogmap_dir": float(info.get("cogmap_dir", 0.0)),
-                "cogmap_facing": float(info.get("cogmap_facing", 0.0)),
-                "cogmap_pos": float(info.get("cogmap_pos", 0.0)),
-                "exp_coverage": float(info.get("cogmap_exploration_coverage", 0.0)),
-                "eval_task_reward": float(info.get("eval_task_reward", 0.0)),
-                "eval_task_mean": float(info.get("eval_task_mean", 0.0)),
-                **{k: float(v) for k, v in info.items()
-                   if k.startswith("eval_") and k not in ("eval_task_reward", "eval_task_scores", "eval_task_mean")},
-            }
-        else:
-            reward_extra = {
-                "traj_success": float(traj_success),
-                "step_penalty": 0.0,
-                "invalid_penalty": 0.0,
-                "cogmap_reward": 0.0,
-                "cogmap_dir": 0.0,
-                "cogmap_facing": 0.0,
-                "cogmap_pos": 0.0,
-                "exp_coverage": 0.0,
-                "eval_task_reward": 0.0,
-                "eval_task_mean": 0.0,
-            }
+        # Build reward_extra_info with a schema derived from env config so every
+        # turn and every worker produces the same reward keys.
+        reward_extra = _build_reward_extra_info(
+            info=info if last_turn else {},
+            traj_success=traj_success,
+            step_penalty=agent_data.total_step_penalty if last_turn else 0.0,
+            invalid_penalty=agent_data.total_invalid_penalty if last_turn else 0.0,
+            eval_metric_keys=agent_data.eval_metric_keys,
+        )
 
         output = AgentLoopOutput(
             prompt_ids=prompt_ids[-self.prompt_length:],

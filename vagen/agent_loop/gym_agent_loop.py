@@ -24,6 +24,60 @@ import importlib
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
+def _get_expected_eval_metric_keys(env_config: Any) -> List[str]:
+    """Derive the stable per-task eval metric keys from env config."""
+    if isinstance(env_config, dict):
+        eval_tasks = env_config.get("eval_tasks", []) or []
+    else:
+        eval_tasks = getattr(env_config, "eval_tasks", []) or []
+
+    keys: List[str] = []
+    seen: set[str] = set()
+    for task in eval_tasks:
+        if isinstance(task, dict):
+            task_type = task.get("task_type")
+        else:
+            task_type = getattr(task, "task_type", None)
+        if not task_type:
+            continue
+        key = f"eval_{task_type}"
+        if key not in seen:
+            seen.add(key)
+            keys.append(key)
+    return keys
+
+
+def _build_reward_extra_info(
+    *,
+    info: Dict[str, Any],
+    traj_success: float,
+    step_penalty: float,
+    invalid_penalty: float,
+    eval_metric_keys: List[str],
+    graph_states: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    reward_extra = {
+        "traj_success": float(traj_success),
+        "step_penalty": step_penalty,
+        "invalid_penalty": invalid_penalty,
+        "cogmap_reward": float(info.get("cogmap_score", 0.0)) * 10.0,
+        "cogmap_dir": float(info.get("cogmap_dir", 0.0)),
+        "cogmap_facing": float(info.get("cogmap_facing", 0.0)),
+        "cogmap_pos": float(info.get("cogmap_pos", 0.0)),
+        "exp_coverage": float(info.get("cogmap_exploration_coverage", 0.0)),
+        "eval_task_reward": float(info.get("eval_task_reward", 0.0)),
+        "eval_task_mean": float(info.get("eval_task_mean", 0.0)),
+    }
+    if graph_states is not None:
+        reward_extra["graph_states"] = json.dumps(list(graph_states))
+
+    # Use the task config, not the observed info payload, to keep a stable schema
+    # across samples and workers during distributed concatenation.
+    for key in eval_metric_keys:
+        reward_extra[key] = float(info.get(key, 0.0))
+    return reward_extra
+
+
 def _flatten_text_only_content(msg):
     """
     convert message['content'] from multimodal list to plain text
@@ -98,6 +152,7 @@ class AgentData:
         self.total_step_penalty: float = 0.0
         self.total_invalid_penalty: float = 0.0
         self.last_info: Dict[str, Any] = {}
+        self.eval_metric_keys: List[str] = []
 
         # Cached assistant text to step env
         self.last_assistant_text: Optional[str] = None
@@ -353,6 +408,7 @@ class GymAgentLoop(AgentLoopBase):
             response_limit=per_turn_response_limit,
             env_name=kwargs["env_name"],
         )
+        agent_data.eval_metric_keys = _get_expected_eval_metric_keys(env_config)
         init_graph_state = info.get("graph_state") if isinstance(info, dict) else None
         if init_graph_state is not None:
             agent_data.graph_states.append(init_graph_state)
@@ -402,22 +458,14 @@ class GymAgentLoop(AgentLoopBase):
             extra_fields={
                 "image_data": agent_data.image_data,
                 "multi_modal_inputs": agent_data.multi_modal_inputs,
-                "reward_extra_info": {
-                    "traj_success": float(agent_data.traj_success),
-                    "graph_states": json.dumps(list(agent_data.graph_states)),
-                    "step_penalty": agent_data.total_step_penalty,
-                    "invalid_penalty": agent_data.total_invalid_penalty,
-                    "cogmap_reward": float(agent_data.last_info.get("cogmap_score", 0.0)) * 10.0,
-                    "cogmap_dir": float(agent_data.last_info.get("cogmap_dir", 0.0)),
-                    "cogmap_facing": float(agent_data.last_info.get("cogmap_facing", 0.0)),
-                    "cogmap_pos": float(agent_data.last_info.get("cogmap_pos", 0.0)),
-                    "exp_coverage": float(agent_data.last_info.get("cogmap_exploration_coverage", 0.0)),
-                    "eval_task_reward": float(agent_data.last_info.get("eval_task_reward", 0.0)),
-                    "eval_task_mean": float(agent_data.last_info.get("eval_task_mean", 0.0)),
-                    # Per-task eval scores (eval_dir, eval_rot, etc.) forwarded from env info
-                    **{k: float(v) for k, v in agent_data.last_info.items()
-                       if k.startswith("eval_") and k not in ("eval_task_reward", "eval_task_scores", "eval_task_mean")},
-                },
+                "reward_extra_info": _build_reward_extra_info(
+                    info=agent_data.last_info,
+                    traj_success=agent_data.traj_success,
+                    step_penalty=agent_data.total_step_penalty,
+                    invalid_penalty=agent_data.total_invalid_penalty,
+                    eval_metric_keys=agent_data.eval_metric_keys,
+                    graph_states=agent_data.graph_states,
+                ),
             },
         )
         return output
