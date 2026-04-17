@@ -1,4 +1,5 @@
 import numpy as np
+import logging
 from enum import Enum
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -15,6 +16,8 @@ from .utils.image_handler import ImageHandler
 from .actions.actions import configure_actions
 from .evaluation.task_types import EvalTaskType
 from gymnasium.utils import seeding
+
+logger = logging.getLogger(__file__)
 
 
 class EnvPhase(Enum):
@@ -65,8 +68,10 @@ class SpatialGym(GymImageEnv):
         self.best_perception_score: float = 0.0
 
         # Eval task state
-        self.eval_task_queue: List[Tuple] = []  # [(task, question), ...]
+        self.eval_task_queue: List[Tuple] = []  # [(task_type, task, question), ...]
         self.eval_task_scores: List[float] = []
+        self.eval_task_scores_by_type: Dict[str, float] = {}
+        self.eval_task_generation_failures: Dict[str, str] = {}
 
         # Tracks whether last action turn had observe + visible objects
         self._last_action_had_observe: bool = False
@@ -150,6 +155,8 @@ class SpatialGym(GymImageEnv):
         # Eval task state reset
         self.eval_task_queue = []
         self.eval_task_scores = []
+        self.eval_task_scores_by_type = {}
+        self.eval_task_generation_failures = {}
 
         BaseAction.set_field_of_view(self.config.field_of_view)
         self.exploration_manager = ExplorationManager(
@@ -283,7 +290,12 @@ class SpatialGym(GymImageEnv):
             # Re-attach the FOV image so agent can plan actions
             self._append_fov_image(obs)
             self.render_cache = obs
-            return obs, 0.0, False, {'perception_passed': True, 'perception_score': overall}
+            return obs, 0.0, False, {
+                'perception_passed': True,
+                'perception_score': overall,
+                'perception_best_score': self.best_perception_score,
+                'perception_attempt_completed': True,
+            }
 
         # Failed
         self.perception_retries_left -= 1
@@ -306,7 +318,13 @@ class SpatialGym(GymImageEnv):
         self._append_fov_image(obs)
 
         self.render_cache = obs
-        return obs, 0.0, False, {'perception_passed': False, 'perception_score': overall, 'perception_exhausted': True}
+        return obs, 0.0, False, {
+            'perception_passed': False,
+            'perception_score': overall,
+            'perception_best_score': self.best_perception_score,
+            'perception_exhausted': True,
+            'perception_attempt_completed': True,
+        }
 
     def _handle_action(self, action_str: str):
         """Execute exploration action (existing logic, extracted from old step())."""
@@ -381,7 +399,7 @@ class SpatialGym(GymImageEnv):
             if self.eval_task_queue:
                 # Serve first eval task
                 self.phase = EnvPhase.EVAL_TASK
-                task, question = self.eval_task_queue[0]
+                _, task, question = self.eval_task_queue[0]
                 obs = {'obs_str': self.prompter.get_eval_task_prompt(question)}
                 # Attach image if vision eval task needs it
                 obs = self._attach_eval_task_image(obs, task)
@@ -390,6 +408,7 @@ class SpatialGym(GymImageEnv):
                 self._cogmap_reward = reward
                 self._cogmap_info = info
                 return obs, 0.0, False, {'cogmap_done': True, **info}
+            info = {**info, **self._build_eval_task_info(eval_reward=0.0)}
 
         obs = {'obs_str': self.prompter.task_finished_message()}
         self.render_cache = obs
@@ -404,22 +423,31 @@ class SpatialGym(GymImageEnv):
         answer_str = answer if answer else action_str
 
         # Evaluate current task
-        task, _ = self.eval_task_queue.pop(0)
+        task_type, task, _ = self.eval_task_queue.pop(0)
         try:
             score, eval_info = task.evaluate(answer_str)
             # Keep continuous score (float); bool True/False → 1.0/0.0
-            self.eval_task_scores.append(float(score) if score is not None else 0.0)
-        except Exception:
-            self.eval_task_scores.append(0.0)
-            eval_info = {}
+            task_score = float(score) if score is not None else 0.0
+        except Exception as exc:
+            logger.warning("SpatialGym eval task '%s' evaluation failed: %s", task_type, exc)
+            task_score = 0.0
+            eval_info = {"eval_task_error": str(exc)}
+        self.eval_task_scores.append(task_score)
+        self.eval_task_scores_by_type[task_type] = task_score
+        cumulative_info = self._build_eval_task_info(eval_reward=0.0)
 
         if self.eval_task_queue:
             # Serve next task
-            next_task, next_question = self.eval_task_queue[0]
+            _, next_task, next_question = self.eval_task_queue[0]
             obs = {'obs_str': self.prompter.get_eval_task_prompt(next_question)}
             obs = self._attach_eval_task_image(obs, next_task)
             self.render_cache = obs
-            return obs, 0.0, False, {'eval_task_correct': bool(self.eval_task_scores[-1]), **eval_info}
+            return obs, 0.0, False, {
+                'eval_task_type': task_type,
+                'eval_task_correct': bool(task_score),
+                **cumulative_info,
+                **eval_info,
+            }
 
         # All tasks done — compute final reward
         eval_reward = 0.0
@@ -428,18 +456,12 @@ class SpatialGym(GymImageEnv):
             eval_reward = self.config.eval_task_reward_scale * mean_score
 
         total_reward = self._cogmap_reward + eval_reward
-        # Build per-task score dict: eval_dir, eval_rot, etc.
-        # Always emit all keys (0.0 default) so every rollout has identical key sets.
-        eval_per_task = {}
-        for i, task_config in enumerate(self.config.eval_tasks):
-            score = self.eval_task_scores[i] if i < len(self.eval_task_scores) else 0.0
-            eval_per_task[f"eval_{task_config['task_type']}"] = score
         info = {
             **self._cogmap_info,
-            'eval_task_scores': self.eval_task_scores,
-            'eval_task_reward': eval_reward,
-            'eval_task_mean': mean_score if self.eval_task_scores else 0.0,
-            **eval_per_task,
+            'eval_task_type': task_type,
+            'eval_task_correct': bool(task_score),
+            **self._build_eval_task_info(eval_reward=eval_reward),
+            **eval_info,
         }
 
         obs = {'obs_str': self.prompter.task_finished_message()}
@@ -464,6 +486,9 @@ class SpatialGym(GymImageEnv):
     def _prepare_eval_task_queue(self):
         """Instantiate eval tasks from config."""
         self.eval_task_queue = []
+        self.eval_task_scores = []
+        self.eval_task_scores_by_type = {}
+        self.eval_task_generation_failures = {}
         for task_config in self.config.eval_tasks:
             task_type = task_config['task_type']
             task_kwargs = dict(task_config.get('task_kwargs', {}) or {})
@@ -478,9 +503,32 @@ class SpatialGym(GymImageEnv):
                     task_kwargs,
                 )
                 question = task.generate_question()
-                self.eval_task_queue.append((task, question))
-            except (ValueError, Exception):
-                continue  # Skip tasks that fail to generate
+                self.eval_task_queue.append((task_type, task, question))
+            except Exception as exc:
+                self.eval_task_generation_failures[task_type] = str(exc)
+                logger.warning("SpatialGym eval task '%s' generation failed: %s", task_type, exc)
+
+    def _build_eval_task_info(self, eval_reward: float = 0.0) -> Dict[str, Any]:
+        """Build stable eval metrics keyed by configured task type."""
+        eval_per_task = {}
+        configured_task_types = []
+        for task_config in self.config.eval_tasks:
+            task_type = task_config['task_type']
+            configured_task_types.append(task_type)
+            eval_per_task[f"eval_{task_type}"] = float(self.eval_task_scores_by_type.get(task_type, 0.0))
+
+        generated_count = len(configured_task_types) - len(self.eval_task_generation_failures)
+        return {
+            'eval_task_scores': list(self.eval_task_scores),
+            'eval_task_scores_by_type': dict(self.eval_task_scores_by_type),
+            'eval_task_reward': eval_reward,
+            'eval_task_mean': sum(self.eval_task_scores) / len(self.eval_task_scores) if self.eval_task_scores else 0.0,
+            'eval_task_completed_count': len(self.eval_task_scores),
+            'eval_task_generated_count': generated_count,
+            'eval_task_configured_count': len(configured_task_types),
+            'eval_task_generation_failures': dict(self.eval_task_generation_failures),
+            **eval_per_task,
+        }
 
     def _attach_eval_task_image(self, obs: dict, task) -> dict:
         """Attach image to obs if the eval task question references <image>.

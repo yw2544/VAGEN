@@ -251,11 +251,12 @@ class PromptManager:
         if passed:
             return "Perception accepted. Now choose your next action."
         msg = "Perception inaccurate."
-        if retries_left > 0:
+        if retries_left >= 0 and self.config.max_perception_retries > 0:
+            retry_number = self.config.max_perception_retries - retries_left
             msg += (
                 f" Please try again — carefully refer to the instruction images above"
                 f" for object appearances and facing conventions."
-                f" [Retry {self.config.max_perception_retries - retries_left + 1}/{self.config.max_perception_retries}]"
+                f" [Retry {retry_number}/{self.config.max_perception_retries}]"
             )
         else:
             msg += " No retries remaining."

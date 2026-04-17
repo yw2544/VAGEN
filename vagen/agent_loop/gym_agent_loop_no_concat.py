@@ -21,6 +21,7 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 from .gym_agent_loop import (
     _build_reward_extra_info,
+    _env_config_for_rollout_phase,
     _extract_multi_modal_inputs,
     _flatten_text_only_content,
     _get_expected_eval_metric_keys,
@@ -79,6 +80,10 @@ class AgentData:
         # Reward component accumulators
         self.total_step_penalty: float = 0.0
         self.total_invalid_penalty: float = 0.0
+        self.perception_attempts: int = 0
+        self.perception_passes: int = 0
+        self.perception_turns: int = 0
+        self.perception_score_sum: float = 0.0
 
         # Cached assistant text to step env
         self.last_assistant_text: Optional[str] = None
@@ -122,7 +127,8 @@ class GymAgentLoop(AgentLoopBase):
             module = importlib.import_module(module_path)
             self.env_registry[env_name] = getattr(module, class_name)
         env_cls = self.env_registry[env_name]
-        env_config = kwargs["config"]
+        validate = bool(kwargs.get("validate", False))
+        env_config = _env_config_for_rollout_phase(kwargs["config"], validate)
         seed = kwargs["seed"]
         self.env_max_turns = kwargs.get("max_turns", None)
         env: GymImageEnv = env_cls(env_config=env_config)
@@ -279,6 +285,15 @@ class GymAgentLoop(AgentLoopBase):
             obs, reward, done, info = {"obs_str":"Environment Error"}, 0.0, True, {"traj_success": False}
 
         traj_success = extract_success(info)
+        if isinstance(info, dict) and info.get("turn_category") == "perception":
+            agent_data.perception_turns += 1
+            if info.get("perception_attempt_completed"):
+                agent_data.perception_attempts += 1
+                if info.get("perception_passed"):
+                    agent_data.perception_passes += 1
+                agent_data.perception_score_sum += float(
+                    info.get("perception_best_score", info.get("perception_score", 0.0)) or 0.0
+                )
         # Validation turns (e.g. perception checks) don't count toward the turn budget or penalties
         if not (isinstance(info, dict) and info.get("is_validation_turn", False)):
             agent_data.env_turns += 1
@@ -314,6 +329,12 @@ class GymAgentLoop(AgentLoopBase):
             step_penalty=agent_data.total_step_penalty if last_turn else 0.0,
             invalid_penalty=agent_data.total_invalid_penalty if last_turn else 0.0,
             eval_metric_keys=agent_data.eval_metric_keys,
+            perception_stats={
+                "attempts": agent_data.perception_attempts if last_turn else 0,
+                "passes": agent_data.perception_passes if last_turn else 0,
+                "turns": agent_data.perception_turns if last_turn else 0,
+                "score_sum": agent_data.perception_score_sum if last_turn else 0.0,
+            },
         )
 
         output = AgentLoopOutput(

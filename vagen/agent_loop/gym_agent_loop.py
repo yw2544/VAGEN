@@ -2,6 +2,7 @@
 # Licensed under the Apache License, Version 2.0
 
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -47,6 +48,20 @@ def _get_expected_eval_metric_keys(env_config: Any) -> List[str]:
     return keys
 
 
+def _env_config_for_rollout_phase(env_config: Any, validate: bool) -> Any:
+    """Keep expensive perception checks out of training rollouts."""
+    if validate:
+        return env_config
+    if isinstance(env_config, dict):
+        cfg = dict(env_config)
+        cfg["require_perception"] = False
+        return cfg
+    cfg = copy.copy(env_config)
+    if hasattr(cfg, "require_perception"):
+        setattr(cfg, "require_perception", False)
+    return cfg
+
+
 def _build_reward_extra_info(
     *,
     info: Dict[str, Any],
@@ -55,7 +70,17 @@ def _build_reward_extra_info(
     invalid_penalty: float,
     eval_metric_keys: List[str],
     graph_states: Optional[List[Dict[str, Any]]] = None,
+    perception_stats: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    eval_failures = info.get("eval_task_generation_failures", {}) or {}
+    eval_failure_count = len(eval_failures) if isinstance(eval_failures, dict) else 0
+    perception_stats = perception_stats or {}
+    perception_attempts = float(perception_stats.get("attempts", 0.0))
+    perception_passes = float(perception_stats.get("passes", 0.0))
+    perception_turns = float(perception_stats.get("turns", 0.0))
+    perception_score_sum = float(perception_stats.get("score_sum", 0.0))
+    perception_pass_rate = perception_passes / perception_attempts if perception_attempts > 0 else 0.0
+    perception_mean_score = perception_score_sum / perception_attempts if perception_attempts > 0 else 0.0
     reward_extra = {
         "traj_success": float(traj_success),
         "step_penalty": step_penalty,
@@ -67,6 +92,15 @@ def _build_reward_extra_info(
         "exp_coverage": float(info.get("cogmap_exploration_coverage", 0.0)),
         "eval_task_reward": float(info.get("eval_task_reward", 0.0)),
         "eval_task_mean": float(info.get("eval_task_mean", 0.0)),
+        "eval_task_completed_count": float(info.get("eval_task_completed_count", 0.0)),
+        "eval_task_generated_count": float(info.get("eval_task_generated_count", 0.0)),
+        "eval_task_configured_count": float(info.get("eval_task_configured_count", len(eval_metric_keys))),
+        "eval_task_generation_failure_count": float(eval_failure_count),
+        "eval_perception": perception_pass_rate,
+        "perception_mean_score": perception_mean_score,
+        "perception_attempt_count": perception_attempts,
+        "perception_pass_count": perception_passes,
+        "perception_turn_count": perception_turns,
     }
     if graph_states is not None:
         reward_extra["graph_states"] = json.dumps(list(graph_states))
@@ -127,6 +161,7 @@ class AgentData:
         env: GymImageEnv,
         response_limit: int,
         env_name: str,
+        finish_eval_after_token_limit: bool = False,
     ):
         self.messages = messages
         self.image_data = image_data
@@ -135,6 +170,7 @@ class AgentData:
         self.env = env
         self.response_limit = response_limit
         self.env_name = env_name
+        self.finish_eval_after_token_limit = finish_eval_after_token_limit
 
         # Token buffers
         self.prompt_ids: List[int] = []
@@ -153,6 +189,10 @@ class AgentData:
         self.total_invalid_penalty: float = 0.0
         self.last_info: Dict[str, Any] = {}
         self.eval_metric_keys: List[str] = []
+        self.perception_attempts: int = 0
+        self.perception_passes: int = 0
+        self.perception_turns: int = 0
+        self.perception_score_sum: float = 0.0
 
         # Cached assistant text to step env
         self.last_assistant_text: Optional[str] = None
@@ -168,6 +208,15 @@ def _normalize_images(imgs: List[Image.Image]) -> List[Image.Image]:
             continue
         out.append(im.convert("RGB") if isinstance(im, Image.Image) else im)
     return out
+
+
+def _is_eval_flow_active(env: GymImageEnv, info: Dict[str, Any]) -> bool:
+    """Return whether the env is already in the post-exploration eval flow."""
+    if info.get("cogmap_done", False) or info.get("turn_category") == "evaluation":
+        return True
+    phase = getattr(env, "phase", None)
+    phase_value = getattr(phase, "value", phase)
+    return phase_value == "eval_task"
 
 
 def _extract_multi_modal_inputs(model_inputs: Dict[str, Any]) -> Dict[str, Any]:
@@ -373,7 +422,8 @@ class GymAgentLoop(AgentLoopBase):
             module = importlib.import_module(module_path)
             self.env_registry[env_name] = getattr(module, class_name)
         env_cls = self.env_registry[env_name]
-        env_config = kwargs["config"]
+        validate = bool(kwargs.get("validate", False))
+        env_config = _env_config_for_rollout_phase(kwargs["config"], validate)
         seed = kwargs["seed"]
         self.env_max_turns = kwargs.get("max_turns", None)
         env: GymImageEnv = env_cls(env_config=env_config)
@@ -407,6 +457,7 @@ class GymAgentLoop(AgentLoopBase):
             env=env,
             response_limit=per_turn_response_limit,
             env_name=kwargs["env_name"],
+            finish_eval_after_token_limit=bool(env_config.get("enable_eval_tasks", False)) if isinstance(env_config, dict) else bool(getattr(env_config, "enable_eval_tasks", False)),
         )
         agent_data.eval_metric_keys = _get_expected_eval_metric_keys(env_config)
         init_graph_state = info.get("graph_state") if isinstance(info, dict) else None
@@ -465,6 +516,12 @@ class GymAgentLoop(AgentLoopBase):
                     invalid_penalty=agent_data.total_invalid_penalty,
                     eval_metric_keys=agent_data.eval_metric_keys,
                     graph_states=agent_data.graph_states,
+                    perception_stats={
+                        "attempts": agent_data.perception_attempts,
+                        "passes": agent_data.perception_passes,
+                        "turns": agent_data.perception_turns,
+                        "score_sum": agent_data.perception_score_sum,
+                    },
                 ),
             },
         )
@@ -579,6 +636,15 @@ class GymAgentLoop(AgentLoopBase):
         if graph_state is not None:
             agent_data.graph_states.append(graph_state)
         agent_data.traj_success = extract_success(info)
+        if isinstance(info, dict) and info.get("turn_category") == "perception":
+            agent_data.perception_turns += 1
+            if info.get("perception_attempt_completed"):
+                agent_data.perception_attempts += 1
+                if info.get("perception_passed"):
+                    agent_data.perception_passes += 1
+                agent_data.perception_score_sum += float(
+                    info.get("perception_best_score", info.get("perception_score", 0.0)) or 0.0
+                )
         # Validation turns (e.g. perception checks) don't count toward the turn budget or penalties
         if not (isinstance(info, dict) and info.get("is_validation_turn", False)):
             agent_data.env_turns += 1
@@ -596,8 +662,13 @@ class GymAgentLoop(AgentLoopBase):
         if self.env_max_turns is not None and agent_data.env_turns >= int(self.env_max_turns):
             return AgentState.TERMINATED
 
-        # Termination rule #1: response token-limit
-        if len(agent_data.response_mask) >= self.response_length:
+        # Termination rule #1: response token-limit. Once SpatialGym has entered
+        # its post-exploration eval flow, let the env finish so validation
+        # metrics come from answered eval tasks instead of default zero fields.
+        eval_flow_active = agent_data.finish_eval_after_token_limit and _is_eval_flow_active(
+            agent_data.env, info if isinstance(info, dict) else {}
+        )
+        if len(agent_data.response_mask) >= self.response_length and not eval_flow_active:
             return AgentState.TERMINATED
 
         # Not terminal -> append user suffix for next turn
