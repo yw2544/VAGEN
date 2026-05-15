@@ -53,10 +53,14 @@ def _env_config_for_rollout_phase(env_config: Any, validate: bool) -> Any:
     if validate:
         return env_config
     if isinstance(env_config, dict):
+        if env_config.get("enable_perception_during_training", False):
+            return env_config
         cfg = dict(env_config)
         cfg["require_perception"] = False
         return cfg
     cfg = copy.copy(env_config)
+    if getattr(cfg, "enable_perception_during_training", False):
+        return cfg
     if hasattr(cfg, "require_perception"):
         setattr(cfg, "require_perception", False)
     return cfg
@@ -110,6 +114,26 @@ def _build_reward_extra_info(
     for key in eval_metric_keys:
         reward_extra[key] = float(info.get(key, 0.0))
     return reward_extra
+
+
+def _annotate_latest_graph_state_with_perception(
+    graph_states: List[Dict[str, Any]],
+    info: Dict[str, Any],
+) -> None:
+    """Attach perception outcome to the current observed state for downstream SFT filtering."""
+    if not graph_states:
+        return
+    latest = graph_states[-1]
+    if not isinstance(latest, dict):
+        return
+    latest["perception_attempt_completed"] = bool(info.get("perception_attempt_completed", False))
+    latest["perception_passed"] = bool(info.get("perception_passed", False))
+    if "perception_best_score" in info:
+        latest["perception_best_score"] = float(info.get("perception_best_score", 0.0) or 0.0)
+    elif "perception_score" in info:
+        latest["perception_best_score"] = float(info.get("perception_score", 0.0) or 0.0)
+    if "perception_exhausted" in info:
+        latest["perception_exhausted"] = bool(info.get("perception_exhausted", False))
 
 
 def _flatten_text_only_content(msg):
@@ -637,6 +661,7 @@ class GymAgentLoop(AgentLoopBase):
             agent_data.graph_states.append(graph_state)
         agent_data.traj_success = extract_success(info)
         if isinstance(info, dict) and info.get("turn_category") == "perception":
+            _annotate_latest_graph_state_with_perception(agent_data.graph_states, info)
             agent_data.perception_turns += 1
             if info.get("perception_attempt_completed"):
                 agent_data.perception_attempts += 1

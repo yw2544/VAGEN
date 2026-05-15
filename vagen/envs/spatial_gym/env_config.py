@@ -54,6 +54,7 @@ class SpatialGymConfig:
 
     # Perception validation (local cogmap gate before each action)
     require_perception: bool = False
+    enable_perception_during_training: bool = False
     perception_pass_threshold: float = 0.4
     max_perception_retries: int = 2  # total attempts = max_perception_retries + 1
 
@@ -157,6 +158,7 @@ class SpatialGymConfig:
             'special_token_list': self.special_token_list,
             'image_placeholder': self.image_placeholder,
             'require_perception': self.require_perception,
+            'enable_perception_during_training': self.enable_perception_during_training,
             'perception_pass_threshold': self.perception_pass_threshold,
             'max_perception_retries': self.max_perception_retries,
             'enable_eval_tasks': self.enable_eval_tasks,
