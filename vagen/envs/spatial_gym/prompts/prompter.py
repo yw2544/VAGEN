@@ -236,14 +236,8 @@ class PromptManager:
             "Before your next action, describe what you currently see.\n\n"
             + LOCAL_PERCEPTION_PROMPT
         )
-        if self.enable_think:
-            prompt += (
-                f"\nStrictly follow this format:\n{THINK_LABEL}\n"
-                "[Your thoughts on what you see]\n"
-                f"{ANSWER_LABEL}\n[JSON local perception only]"
-            )
-        else:
-            prompt += f"\nStrictly follow this format:\n{ANSWER_LABEL}\n[JSON local perception only]"
+        # Perception always uses FINAL ANSWER only (no THINK) to match SFT training data.
+        prompt += f"\nStrictly follow this format:\n{ANSWER_LABEL}\n[JSON local perception only]"
         return prompt
 
     def get_perception_feedback(self, passed: bool, retries_left: int) -> str:

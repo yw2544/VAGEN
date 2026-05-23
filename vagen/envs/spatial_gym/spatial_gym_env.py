@@ -286,9 +286,10 @@ class SpatialGym(GymImageEnv):
             # Proceed to action turn
             self.phase = EnvPhase.EXPLORATION_ACTION
             feedback = self.prompter.get_perception_feedback(True, self.perception_retries_left)
-            obs = {'obs_str': feedback + '\n' + self.prompter.steps_left_message(self.remaining_exp_steps) + '\n' + self.prompter.get_format_footer(True)}
-            # Re-attach the FOV image so agent can plan actions
+            obs = {'obs_str': feedback + '\n' + self.prompter.steps_left_message(self.remaining_exp_steps)}
+            # Re-attach FOV image BEFORE the format footer so message order matches SFT data.
             self._append_fov_image(obs)
+            obs['obs_str'] += '\n' + self.prompter.get_format_footer(True)
             self.render_cache = obs
             return obs, 0.0, False, {
                 'perception_passed': True,
@@ -314,8 +315,10 @@ class SpatialGym(GymImageEnv):
 
         # Perception exhausted for this observe — go straight to action
         self.phase = EnvPhase.EXPLORATION_ACTION
-        obs = {'obs_str': self.prompter.steps_left_message(self.remaining_exp_steps) + '\n' + self.prompter.get_format_footer(True)}
+        obs = {'obs_str': self.prompter.steps_left_message(self.remaining_exp_steps)}
+        # FOV image goes BEFORE format footer to match SFT data message order.
         self._append_fov_image(obs)
+        obs['obs_str'] += '\n' + self.prompter.get_format_footer(True)
 
         self.render_cache = obs
         return obs, 0.0, False, {
@@ -540,6 +543,9 @@ class SpatialGym(GymImageEnv):
         if self.config.image_placeholder not in str(task.eval_data.question):
             return obs
         if self.image_handler is None:
+            obs['obs_str'] = obs['obs_str'].replace(
+                self.config.image_placeholder, "[image unavailable]", 1
+            )
             return obs
         # Determine the correct viewing pose for the image
         answer = task.eval_data.answer
@@ -556,8 +562,14 @@ class SpatialGym(GymImageEnv):
                 self.image_handler, seed=self.current_seed,
             )
             obs['multi_modal_input'] = {self.config.image_placeholder: [image]}
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Failed to attach eval task image at pos=%s ori=%s: %s", pos, ori, exc
+            )
+            # Remove the placeholder from obs_str so image count stays consistent.
+            obs['obs_str'] = obs['obs_str'].replace(
+                self.config.image_placeholder, "[image unavailable]", 1
+            )
         return obs
 
     def _count_reported_objects(self, cogmap_str: str) -> int:

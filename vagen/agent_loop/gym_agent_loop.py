@@ -89,7 +89,7 @@ def _build_reward_extra_info(
         "traj_success": float(traj_success),
         "step_penalty": step_penalty,
         "invalid_penalty": invalid_penalty,
-        "cogmap_reward": float(info.get("cogmap_score", 0.0)) * 10.0,
+        "cogmap_reward": float(info.get("cogmap_reward", float(info.get("cogmap_score", 0.0)) * 10.0)),
         "cogmap_dir": float(info.get("cogmap_dir", 0.0)),
         "cogmap_facing": float(info.get("cogmap_facing", 0.0)),
         "cogmap_pos": float(info.get("cogmap_pos", 0.0)),
@@ -105,6 +105,16 @@ def _build_reward_extra_info(
         "perception_attempt_count": perception_attempts,
         "perception_pass_count": perception_passes,
         "perception_turn_count": perception_turns,
+        "reward_total": float(info.get("reward_total", info.get("reward_total_01", 0.0))),
+        "reward_base_01": float(info.get("reward_base_01", 0.0)),
+        "reward_total_01": float(info.get("reward_total_01", 0.0)),
+        "reward_cogmap_01": float(info.get("reward_cogmap_01", 0.0)),
+        "reward_coverage_01": float(info.get("reward_coverage_01", 0.0)),
+        "reward_perception_01": float(info.get("reward_perception_01", 0.0)),
+        "reward_eval_task_01": float(info.get("reward_eval_task_01", 0.0)),
+        "reward_best_passed_perception_score": float(info.get("reward_best_passed_perception_score", 0.0)),
+        "reward_perception_pass_bonus": float(info.get("reward_perception_pass_bonus", 0.0)),
+        "raw_env_reward": float(info.get("raw_env_reward", 0.0)),
     }
     if graph_states is not None:
         reward_extra["graph_states"] = json.dumps(list(graph_states))
