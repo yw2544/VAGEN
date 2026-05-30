@@ -811,6 +811,12 @@ class RayPPOTrainer:
             }
             print(f"test_gen_batch meta info: {test_gen_batch.meta_info}")
 
+            # Propagate validate=True into non_tensor_batch so that agent loops
+            # reading kwargs (e.g. gym_agent_loop) receive the flag regardless of
+            # which AgentLoopManager backend is in use.
+            n_val = len(test_gen_batch)
+            test_gen_batch.non_tensor_batch["validate"] = np.array([True] * n_val, dtype=object)
+
             # pad to be divisible by dp_size
             size_divisor = (
                 self.actor_rollout_wg.world_size
